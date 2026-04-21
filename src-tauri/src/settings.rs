@@ -48,16 +48,44 @@ impl Default for Settings {
     }
 }
 
+/// Returns the directory containing the running executable, or None if unavailable.
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
+}
+
+/// Portable mode is active when a file named `portable.flag` exists next to the .exe.
+/// In portable mode all user data (settings, workspace, downloads) lives under `./data/`
+/// relative to the executable — nothing is written to %APPDATA% or Documents.
+pub fn portable_root() -> Option<PathBuf> {
+    let dir = exe_dir()?;
+    if dir.join("portable.flag").exists() {
+        Some(dir.join("data"))
+    } else {
+        None
+    }
+}
+
+pub fn is_portable() -> bool {
+    portable_root().is_some()
+}
+
 pub fn default_workspace_path() -> Option<PathBuf> {
+    if let Some(root) = portable_root() {
+        return Some(root.join("workspace"));
+    }
     let userdirs = directories::UserDirs::new()?;
     let docs = userdirs.document_dir()?;
     Some(docs.join("SteamShadow"))
 }
 
 pub fn config_dir() -> AppResult<PathBuf> {
-    let pd = ProjectDirs::from("io", "kilocode", "SteamShadowLauncher")
-        .ok_or_else(|| AppError::Config("cannot resolve config dir".into()))?;
-    let dir = pd.config_dir().to_path_buf();
+    let dir = if let Some(root) = portable_root() {
+        root.join("config")
+    } else {
+        let pd = ProjectDirs::from("io", "kilocode", "SteamShadowLauncher")
+            .ok_or_else(|| AppError::Config("cannot resolve config dir".into()))?;
+        pd.config_dir().to_path_buf()
+    };
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }

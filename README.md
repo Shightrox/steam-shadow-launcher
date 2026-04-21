@@ -47,12 +47,17 @@
 
 ## 📦 Install
 
-1. Grab the latest `Steam-Shadow-Launcher_<ver>_x64-setup.exe` from
-   [Releases](../../releases).
-2. Run it. The launcher will ask for admin rights only when actually needed
-   (Sandbox mode requires elevation; Switch mode does not).
-3. On first run, point it at your Steam install (auto-detected in 99% of
-   cases) and pick a workspace folder for shadow-account data.
+Pick one of two flavours from [Releases](../../releases):
+
+| Flavour | File | Notes |
+|---|---|---|
+| **Installer** | `Steam Shadow Launcher_<ver>_x64-setup.exe` | NSIS, registers in Start menu, default choice. |
+| **Portable** | `SteamShadowLauncher-<ver>-portable.zip` | Unzip anywhere, run `SteamShadowLauncher.exe`. All data lives in `./data/` next to the exe — perfect for USB sticks or trial runs. Delete `portable.flag` to switch back to `%APPDATA%`. |
+
+The launcher only asks for admin rights when actually needed (Sandbox mode
+requires elevation; Switch mode does not). On first run, point it at your
+Steam install (auto-detected in 99% of cases) and pick a workspace folder
+for shadow-account data.
 
 > **Sandboxie-Plus** is _not_ bundled — the launcher offers to download &
 > silently install the latest official release from
@@ -175,12 +180,17 @@ typography. Open Settings to switch between RU / EN.
 
 ### 📦 Установка
 
-1. Скачай свежий `Steam-Shadow-Launcher_<ver>_x64-setup.exe` со страницы
-   [Releases](../../releases).
-2. Запусти. Админ-права запрашиваются только при необходимости (для
-   SANDBOX-режима, со специальным предупреждением).
-3. На первом запуске покажи путь к Steam (определяется автоматически в 99%
-   случаев) и выбери папку для данных теневых аккаунтов.
+На странице [Releases](../../releases) есть два варианта:
+
+| Вариант | Файл | Особенности |
+|---|---|---|
+| **Установщик** | `Steam Shadow Launcher_<ver>_x64-setup.exe` | NSIS, создаёт ярлыки в «Пуске», вариант по умолчанию. |
+| **Portable** | `SteamShadowLauncher-<ver>-portable.zip` | Распакуй куда угодно, запусти `SteamShadowLauncher.exe`. Все данные в папке `./data/` рядом с .exe — идеально для флешки или «попробовать». Удали `portable.flag` — и поведение вернётся к стандартному (`%APPDATA%`). |
+
+Админ-права запрашиваются только при необходимости (для SANDBOX-режима,
+со специальным предупреждением). На первом запуске покажи путь к Steam
+(определяется автоматически в 99% случаев) и выбери папку для данных
+теневых аккаунтов.
 
 > **Sandboxie-Plus** не входит в комплект — лаунчер предлагает скачать и
 > установить последнюю официальную версию с
