@@ -32,7 +32,18 @@
 
 ## 🖼️ Screenshots
 
-> _Add screenshots / GIFs here once published._
+<p align="center">
+  <img src="docs/screenshots/main_screen.png" alt="Main screen" width="760"><br>
+  <em>Main view — account cards, mode switch, sandbox status.</em>
+</p>
+<p align="center">
+  <img src="docs/screenshots/game_screen.png" alt="Game picker" width="760"><br>
+  <em>Game picker — library covers pulled from local cache, one-click launch.</em>
+</p>
+<p align="center">
+  <img src="docs/screenshots/settings_screen.png" alt="Settings" width="760"><br>
+  <em>Settings — workspace, Steam path override, Sandboxie-Plus status, revert last switch.</em>
+</p>
 
 ## 📦 Install
 
@@ -146,6 +157,21 @@ typography. Open Settings to switch between RU / EN.
 - **Аватарки, избранное, счётчики запусков, ссылки на профиль/инвентарь.**
 - **Chromeless pixel-art интерфейс** 760×520, RU/EN.
 - **Не трогает оригинальные файлы Steam** без бэкапа.
+
+### 🖼️ Скриншоты
+
+<p align="center">
+  <img src="docs/screenshots/main_screen.png" alt="Главный экран" width="760"><br>
+  <em>Главный экран — карточки аккаунтов, переключатель режима, статус песочниц.</em>
+</p>
+<p align="center">
+  <img src="docs/screenshots/game_screen.png" alt="Выбор игры" width="760"><br>
+  <em>Выбор игры — обложки из локального кэша, запуск в один клик.</em>
+</p>
+<p align="center">
+  <img src="docs/screenshots/settings_screen.png" alt="Настройки" width="760"><br>
+  <em>Настройки — workspace, переопределение пути к Steam, статус Sandboxie-Plus, откат switch.</em>
+</p>
 
 ### 📦 Установка
 
