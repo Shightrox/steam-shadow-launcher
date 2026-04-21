@@ -1,0 +1,23 @@
+# Build artifacts
+target/
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+*.tsbuildinfo
+
+# IDE
+.vscode/
+.idea/
+
+# Logs / settings
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local secrets / dev workspaces
+.env
+.env.*
+/workspace-test/
