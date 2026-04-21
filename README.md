@@ -1,6 +1,6 @@
 # Steam Shadow Launcher
 
-Переключалка аккаунтов Steam и параллельный запуск через Sandboxie-Plus. С собственным Steam Guard внутри — мобильный аутентификатор больше не нужен.
+Steam Desktop Autheticator + Account Switcher + Parrallel Multi Launcher with AiO Sandboxie and more!
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-66ffcc)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-1f8c6e)
