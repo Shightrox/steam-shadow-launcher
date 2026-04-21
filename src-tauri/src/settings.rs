@@ -1,5 +1,4 @@
 use crate::error::{AppError, AppResult};
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -48,46 +47,55 @@ impl Default for Settings {
     }
 }
 
-/// Returns the directory containing the running executable, or None if unavailable.
-fn exe_dir() -> Option<PathBuf> {
-    std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
-}
+/// Returns `%APPDATA%\SteamShadowLauncher\` (Roaming). Creates it on demand.
+pub fn config_dir() -> AppResult<PathBuf> {
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| {
+            // Fallback for the rare case where APPDATA is not set: use user profile.
+            std::env::var_os("USERPROFILE")
+                .map(|p| PathBuf::from(p).join("AppData").join("Roaming"))
+        })
+        .ok_or_else(|| AppError::Config("cannot resolve %APPDATA%".into()))?;
+    let dir = base.join("SteamShadowLauncher");
+    fs::create_dir_all(&dir)?;
 
-/// Portable mode is active when a file named `portable.flag` exists next to the .exe.
-/// In portable mode all user data (settings, workspace, downloads) lives under `./data/`
-/// relative to the executable — nothing is written to %APPDATA% or Documents.
-pub fn portable_root() -> Option<PathBuf> {
-    let dir = exe_dir()?;
-    if dir.join("portable.flag").exists() {
-        Some(dir.join("data"))
-    } else {
-        None
+    // One-shot migration: older builds stored data under
+    // `%APPDATA%\kilocode\SteamShadowLauncher\config\`. If we find that layout
+    // and the new layout is empty, move contents in so users don't lose settings.
+    let legacy = base.join("kilocode").join("SteamShadowLauncher");
+    if legacy.exists() && !dir.join("settings.json").exists() {
+        let legacy_cfg = legacy.join("config");
+        if legacy_cfg.exists() {
+            if let Ok(entries) = fs::read_dir(&legacy_cfg) {
+                for e in entries.flatten() {
+                    let from = e.path();
+                    let to = dir.join(e.file_name());
+                    let _ = fs::rename(&from, &to).or_else(|_| {
+                        if from.is_file() {
+                            fs::copy(&from, &to).map(|_| ())
+                        } else {
+                            Ok(())
+                        }
+                    });
+                }
+            }
+        }
+        // Best-effort cleanup; ignore failures.
+        let _ = fs::remove_dir_all(&legacy);
+        let parent = base.join("kilocode");
+        if parent.read_dir().map(|mut r| r.next().is_none()).unwrap_or(false) {
+            let _ = fs::remove_dir(parent);
+        }
     }
-}
 
-pub fn is_portable() -> bool {
-    portable_root().is_some()
+    Ok(dir)
 }
 
 pub fn default_workspace_path() -> Option<PathBuf> {
-    if let Some(root) = portable_root() {
-        return Some(root.join("workspace"));
-    }
     let userdirs = directories::UserDirs::new()?;
     let docs = userdirs.document_dir()?;
     Some(docs.join("SteamShadow"))
-}
-
-pub fn config_dir() -> AppResult<PathBuf> {
-    let dir = if let Some(root) = portable_root() {
-        root.join("config")
-    } else {
-        let pd = ProjectDirs::from("io", "kilocode", "SteamShadowLauncher")
-            .ok_or_else(|| AppError::Config("cannot resolve config dir".into()))?;
-        pd.config_dir().to_path_buf()
-    };
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
 }
 
 pub fn settings_path() -> AppResult<PathBuf> {

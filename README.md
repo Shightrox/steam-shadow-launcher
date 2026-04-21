@@ -47,12 +47,12 @@
 
 ## 📦 Install
 
-Pick one of two flavours from [Releases](../../releases):
+Pick whichever you prefer from [Releases](../../releases):
 
 | Flavour | File | Notes |
 |---|---|---|
 | **Installer** | `Steam Shadow Launcher_<ver>_x64-setup.exe` | NSIS, registers in Start menu, default choice. |
-| **Portable** | `SteamShadowLauncher-<ver>-portable.zip` | Unzip anywhere, run `SteamShadowLauncher.exe`. All data lives in `./data/` next to the exe — perfect for USB sticks or trial runs. Delete `portable.flag` to switch back to `%APPDATA%`. |
+| **Standalone .exe** | `SteamShadowLauncher.exe` | Single file, no installer. Just download and run. Settings live in `%APPDATA%\SteamShadowLauncher\`. |
 
 The launcher only asks for admin rights when actually needed (Sandbox mode
 requires elevation; Switch mode does not). On first run, point it at your
@@ -185,7 +185,7 @@ typography. Open Settings to switch between RU / EN.
 | Вариант | Файл | Особенности |
 |---|---|---|
 | **Установщик** | `Steam Shadow Launcher_<ver>_x64-setup.exe` | NSIS, создаёт ярлыки в «Пуске», вариант по умолчанию. |
-| **Portable** | `SteamShadowLauncher-<ver>-portable.zip` | Распакуй куда угодно, запусти `SteamShadowLauncher.exe`. Все данные в папке `./data/` рядом с .exe — идеально для флешки или «попробовать». Удали `portable.flag` — и поведение вернётся к стандартному (`%APPDATA%`). |
+| **Standalone .exe** | `SteamShadowLauncher.exe` | Один файл, без установщика. Скачал, запустил — всё. Настройки хранятся в `%APPDATA%\SteamShadowLauncher\`. |
 
 Админ-права запрашиваются только при необходимости (для SANDBOX-режима,
 со специальным предупреждением). На первом запуске покажи путь к Steam

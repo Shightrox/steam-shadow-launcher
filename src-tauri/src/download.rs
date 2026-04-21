@@ -70,10 +70,7 @@ pub fn fetch_latest_sandboxie_asset() -> AppResult<InstallerAsset> {
 }
 
 pub fn downloads_dir() -> AppResult<PathBuf> {
-    let dir = settings::config_dir()?
-        .parent()
-        .ok_or_else(|| AppError::Config("no parent of config dir".into()))?
-        .join("downloads");
+    let dir = settings::config_dir()?.join("downloads");
     fs::create_dir_all(&dir)?;
     Ok(dir)
 }
