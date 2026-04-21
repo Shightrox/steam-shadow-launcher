@@ -21,3 +21,7 @@ Thumbs.db
 .env
 .env.*
 /workspace-test/
+
+RELEASE_NOTES_*.md
+SHA256SUMS.txt
+
