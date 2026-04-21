@@ -24,4 +24,5 @@ Thumbs.db
 
 RELEASE_NOTES_*.md
 SHA256SUMS.txt
+dist-portable/
 

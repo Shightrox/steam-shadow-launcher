@@ -22,6 +22,18 @@ pub struct ShadowMeta {
     pub favorite: bool,
     #[serde(default, rename = "launchCount")]
     pub launch_count: u64,
+    // ── P11: Authenticator metadata ──────────────────────────────────────
+    /// True iff a maFile is stored under `<account>/auth/maFile.json`.
+    #[serde(default, rename = "hasAuthenticator")]
+    pub has_authenticator: bool,
+    /// SDA `account_name` field — the Steam login the maFile is bound to.
+    /// May differ from the shadow `login` (e.g. case differences) but is
+    /// usually identical.
+    #[serde(default, rename = "authenticatorAccountName")]
+    pub authenticator_account_name: Option<String>,
+    /// ISO unix-seconds timestamp.
+    #[serde(default, rename = "authenticatorImportedAt")]
+    pub authenticator_imported_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,6 +51,10 @@ pub struct Account {
     pub favorite: bool,
     #[serde(rename = "launchCount")]
     pub launch_count: u64,
+    #[serde(rename = "hasAuthenticator")]
+    pub has_authenticator: bool,
+    #[serde(rename = "authenticatorImportedAt")]
+    pub authenticator_imported_at: Option<String>,
 }
 
 fn now_iso() -> String {
@@ -205,6 +221,8 @@ fn meta_to_account(login: String, dir: PathBuf, meta: ShadowMeta) -> Account {
         avatar_path,
         favorite: meta.favorite,
         launch_count: meta.launch_count,
+        has_authenticator: meta.has_authenticator,
+        authenticator_imported_at: meta.authenticator_imported_at,
         path: dir,
     }
 }
@@ -263,6 +281,9 @@ pub fn add_account(
         avatar_file: None,
         favorite: false,
         launch_count: 0,
+        has_authenticator: false,
+        authenticator_account_name: None,
+        authenticator_imported_at: None,
     };
     // Best-effort: pick up SteamID + avatar straight away.
     backfill_meta(&dir, login, &mut meta);
@@ -371,6 +392,35 @@ pub fn touch_last_launch(workspace: &Path, login: &str) -> AppResult<()> {
     meta.last_launch_at = Some(now_iso());
     meta.launch_count = meta.launch_count.saturating_add(1);
     write_meta(&dir, &meta)
+}
+
+/// P11: mark the account as having (or no longer having) a maFile attached.
+/// Also fills in the `accountName` field for UI/debug. Best-effort: if the
+/// account directory does not exist yet, fails with NotFound.
+pub fn set_authenticator_meta(
+    workspace: &Path,
+    login: &str,
+    has_auth: bool,
+    account_name: Option<String>,
+) -> AppResult<()> {
+    validate_login(login)?;
+    let dir = account_dir(workspace, login);
+    if !dir.exists() {
+        return Err(AppError::NotFound(format!("account {login}")));
+    }
+    let mut meta = read_meta(&dir);
+    meta.has_authenticator = has_auth;
+    meta.authenticator_account_name = account_name;
+    meta.authenticator_imported_at = if has_auth { Some(now_iso()) } else { None };
+    write_meta(&dir, &meta)
+}
+
+/// P11: returns `<account>/auth/` (creating it). Used by `sda::vault`.
+pub fn auth_dir(workspace: &Path, login: &str) -> AppResult<PathBuf> {
+    validate_login(login)?;
+    let dir = account_dir(workspace, login).join("auth");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]

@@ -1,6 +1,6 @@
 [package]
 name = "steam-shadow-launcher"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Steam Shadow Launcher"
 authors = ["Steam Shadow"]
@@ -20,7 +20,18 @@ anyhow = "1.0"
 thiserror = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
-ureq = { version = "2.10", features = ["json", "tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "cookies", "rustls-tls", "gzip"] }
+base64 = "0.22"
+hmac = "0.12"
+sha1 = "0.10"
+rsa = "0.9"
+rand = "0.8"
+aes = "0.8"
+aes-gcm = "0.10"
+cbc = { version = "0.1", features = ["std"] }
+pbkdf2 = "0.12"
+argon2 = "0.5"
+zeroize = { version = "1", features = ["derive"] }
 
 [features]
 default = ["custom-protocol"]

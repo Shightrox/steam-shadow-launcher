@@ -1,4 +1,5 @@
 use crate::error::{AppError, AppResult};
+use crate::http;
 use crate::settings;
 use serde::Deserialize;
 use std::fs::{self, File};
@@ -8,7 +9,6 @@ use std::time::{Duration, Instant};
 
 const REPO_RELEASES: &str =
     "https://api.github.com/repos/sandboxie-plus/Sandboxie/releases/latest";
-const UA: &str = "SteamShadowLauncher/0.1 (+https://github.com/kilo-org)";
 
 #[derive(Debug, Deserialize)]
 struct ReleaseAsset {
@@ -33,18 +33,19 @@ pub struct InstallerAsset {
 }
 
 pub fn fetch_latest_sandboxie_asset() -> AppResult<InstallerAsset> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(15))
-        .timeout_read(Duration::from_secs(60))
-        .build();
-    let resp = agent
+    let resp = http::shared()
         .get(REPO_RELEASES)
-        .set("User-Agent", UA)
-        .set("Accept", "application/vnd.github+json")
-        .call()
+        .header("Accept", "application/vnd.github+json")
+        .send()
         .map_err(|e| AppError::Other(format!("github releases: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(AppError::Other(format!(
+            "github releases HTTP {}",
+            resp.status()
+        )));
+    }
     let rel: Release = resp
-        .into_json()
+        .json()
         .map_err(|e| AppError::Other(format!("parse releases json: {e}")))?;
     // Prefer x64 NSIS installer
     let asset = rel
@@ -81,19 +82,18 @@ pub fn download_with_progress<F: FnMut(u64, Option<u64>)>(
     dst: &std::path::Path,
     mut on_progress: F,
 ) -> AppResult<()> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(20))
-        .timeout_read(Duration::from_secs(120))
-        .build();
-    let resp = agent
+    let resp = http::shared()
         .get(url)
-        .set("User-Agent", UA)
-        .call()
+        .send()
         .map_err(|e| AppError::Other(format!("download: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(AppError::Other(format!("download HTTP {}", resp.status())));
+    }
     let total = resp
-        .header("Content-Length")
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<u64>().ok());
-    let mut reader = resp.into_reader();
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -103,6 +103,7 @@ pub fn download_with_progress<F: FnMut(u64, Option<u64>)>(
     let mut downloaded: u64 = 0;
     let mut last_emit = Instant::now() - Duration::from_secs(1);
     on_progress(0, total);
+    let mut reader = resp;
     loop {
         let n = reader
             .read(&mut buf)

@@ -172,6 +172,7 @@ fn diagnose_state(main: &MainSteamInfo, target_login: &str) -> AppResult<()> {
 
 /// Re-flag loginusers.vdf so `target_login` becomes the active, auto-login
 /// account. All other blocks are preserved but forced to MostRecent=0.
+#[allow(dead_code)] // retained for tests / direct invocation; prod path uses the *_checked sibling
 fn isolate_target_account(txt: &str, target_login: &str) -> String {
     isolate_target_account_checked(txt, target_login).0
 }
@@ -211,6 +212,7 @@ fn isolate_target_account_checked(txt: &str, target_login: &str) -> (String, boo
     // We track depth roughly.
     #[derive(Default, Clone)]
     struct Block {
+        #[allow(dead_code)]
         start: usize,         // line index of steamid line
         open: usize,          // line index of opening brace
         close: usize,         // line index of closing brace

@@ -7,6 +7,7 @@ import { SwitchWarnDialog } from "../components/SwitchWarnDialog";
 import { GamePickerModal } from "../components/GamePickerModal";
 import { SandboxieInstallModal } from "../components/SandboxieInstallModal";
 import { AdminRestartDialog } from "../components/AdminRestartDialog";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Spinner } from "../components/Spinner";
 import { api, type RunningSandbox } from "../api/tauri";
 import { useI18n } from "../i18n";
@@ -39,6 +40,8 @@ export function MainView() {
   const [showSbInstall, setShowSbInstall] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [stoppingLogin, setStoppingLogin] = useState<string | null>(null);
+  const [removeFor, setRemoveFor] = useState<string | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
   const [runningSandboxes, setRunningSandboxes] = useState<
     Record<string, RunningSandbox>
   >({});
@@ -204,15 +207,9 @@ export function MainView() {
                 }
               }}
               onRemove={async (l) => {
-                // Confirm only here — AccountCard no longer double-prompts.
-                if (confirm(t("main.confirmRemove", { login: l }))) {
-                  try {
-                    await remove(l, true);
-                    toast("success", t("main.removed", { login: l }));
-                  } catch (e: any) {
-                    toast("error", String(e));
-                  }
-                }
+                // Open dialog with type-to-confirm; actual deletion runs in
+                // the dialog's onConfirm callback below.
+                setRemoveFor(l);
               }}
               onToggleFavorite={async (l, v) => {
                 try { await setFavorite(l, v); } catch (e: any) { toast("error", String(e)); }
@@ -262,6 +259,34 @@ export function MainView() {
       <SandboxieInstallModal
         open={showSbInstall}
         onClose={() => setShowSbInstall(false)}
+      />
+      <ConfirmDialog
+        open={!!removeFor}
+        title={t("main.removeConfirmTitle", { login: removeFor ?? "" })}
+        body={t("main.removeConfirmBody")}
+        bullets={[
+          t("main.removeConfirmBullet1"),
+          t("main.removeConfirmBullet2"),
+          t("main.removeConfirmBullet3"),
+        ]}
+        requireText={removeFor ?? ""}
+        requireHint={t("confirm.typeLoginToConfirm", { login: removeFor ?? "" })}
+        confirmLabel={t("main.removeConfirmButton")}
+        busy={removeBusy}
+        onCancel={() => !removeBusy && setRemoveFor(null)}
+        onConfirm={async () => {
+          if (!removeFor) return;
+          setRemoveBusy(true);
+          try {
+            await remove(removeFor, true);
+            toast("success", t("main.removed", { login: removeFor }));
+            setRemoveFor(null);
+          } catch (e: any) {
+            toast("error", String(e));
+          } finally {
+            setRemoveBusy(false);
+          }
+        }}
       />
     </div>
   );

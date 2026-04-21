@@ -19,6 +19,23 @@ pub struct Settings {
     pub default_launch_mode: String,
     #[serde(default, rename = "sandboxieInstallAttempted")]
     pub sandboxie_install_attempted: bool,
+    /// P11 M4: iff true, maFiles are stored as `maFile.enc` (Argon2id+AES-GCM).
+    /// Purely a *presence* hint for the UI — the vault also auto-detects the
+    /// extension on disk.
+    #[serde(default, rename = "authMasterPasswordEnabled")]
+    pub auth_master_password_enabled: bool,
+    /// P11 M5: enable background polling of mobile confirmations.
+    #[serde(default, rename = "authPollerEnabled")]
+    pub auth_poller_enabled: bool,
+    /// P11 M5: interval between polls (seconds). Default 60s, min 15s.
+    #[serde(default = "default_poll_interval", rename = "authPollerInterval")]
+    pub auth_poller_interval: u32,
+    /// P11 M5: auto-allow outgoing trade confirmations (dangerous).
+    #[serde(default, rename = "authAutoConfirmTrades")]
+    pub auth_auto_confirm_trades: bool,
+    /// P11 M5: auto-allow market-listing confirmations.
+    #[serde(default, rename = "authAutoConfirmMarket")]
+    pub auth_auto_confirm_market: bool,
 }
 
 fn default_version() -> u32 {
@@ -33,6 +50,10 @@ fn default_mode() -> String {
     "switch".to_string()
 }
 
+fn default_poll_interval() -> u32 {
+    60
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -43,6 +64,11 @@ impl Default for Settings {
             language: default_lang(),
             default_launch_mode: default_mode(),
             sandboxie_install_attempted: false,
+            auth_master_password_enabled: false,
+            auth_poller_enabled: false,
+            auth_poller_interval: default_poll_interval(),
+            auth_auto_confirm_trades: false,
+            auth_auto_confirm_market: false,
         }
     }
 }

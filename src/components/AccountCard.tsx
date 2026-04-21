@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { api, type Account, type AccountHealth, type RunningSandbox } from "../api/tauri";
+import { api, pickFile, type Account, type AccountHealth, type RunningSandbox } from "../api/tauri";
 import { HealthBadge } from "./HealthBadge";
 import { useI18n } from "../i18n";
 import { useApp } from "../state/store";
 import { Spinner } from "./Spinner";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 interface Props {
   account: Account;
@@ -47,10 +48,14 @@ export function AccountCard({
   onRefreshAvatar,
 }: Props) {
   const { t } = useI18n();
-  const { toast } = useApp();
+  const { toast, codes, importMafile, removeAuthenticator } = useApp();
   const [busy, setBusy] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [remove2faOpen, setRemove2faOpen] = useState(false);
+  const [remove2faBusy, setRemove2faBusy] = useState(false);
+  const code = codes[account.login];
+  const has2fa = account.hasAuthenticator;
 
   const launch = async () => {
     setBusy(true);
@@ -139,6 +144,42 @@ export function AccountCard({
         onClick: () => onRemove(account.login),
       },
     ];
+    // P11: authenticator actions
+    items.splice(items.length - 2, 0, { divider: true });
+    if (has2fa) {
+      items.splice(items.length - 2, 0, {
+        label: t("card.twofaCopy"),
+        disabled: !code,
+        onClick: async () => {
+          if (!code) return;
+          try {
+            await navigator.clipboard.writeText(code.code);
+            toast("success", t("auth.copied"));
+          } catch (e: any) {
+            toast("error", String(e));
+          }
+        },
+      });
+      items.splice(items.length - 2, 0, {
+        label: t("card.twofaRemove"),
+        danger: true,
+        onClick: () => setRemove2faOpen(true),
+      });
+    } else {
+      items.splice(items.length - 2, 0, {
+        label: t("card.twofaImport"),
+        onClick: async () => {
+          try {
+            const p = await pickFile(t("auth.import"), ["maFile", "json"]);
+            if (!p) return;
+            await importMafile(account.login, p);
+            toast("success", t("auth.import.success", { login: account.login }));
+          } catch (e: any) {
+            toast("error", String(e));
+          }
+        },
+      });
+    }
     return items;
   };
 
@@ -199,6 +240,31 @@ export function AccountCard({
           ▶ {t("card.inSandbox")} · {fmtUptime(uptimeSec)}
         </div>
       )}
+      {has2fa && code && (
+        <div className="twofa-widget" title={t("auth.code")}>
+          <span className="twofa-label">{t("card.twofa")}</span>
+          <span
+            className={`twofa-code${code.periodRemaining <= 5 ? " pulse" : ""}`}
+          >
+            {code.code}
+          </span>
+          <span className="twofa-countdown">{code.periodRemaining}s</span>
+          <button
+            className="xs"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(code.code);
+                toast("success", t("auth.copied"));
+              } catch (e: any) {
+                toast("error", String(e));
+              }
+            }}
+            title={t("auth.copy")}
+          >
+            ⎘
+          </button>
+        </div>
+      )}
       <div className="actions">
         {inSandbox && onStopSandbox ? (
           <button
@@ -257,6 +323,33 @@ export function AccountCard({
           onClose={() => setMenu(null)}
         />
       )}
+      <ConfirmDialog
+        open={remove2faOpen}
+        title={t("auth.removeConfirmTitle", { login: account.login })}
+        body={t("auth.removeConfirmBody")}
+        bullets={[
+          t("auth.removeConfirmBullet1"),
+          t("auth.removeConfirmBullet2"),
+          t("auth.removeConfirmBullet3"),
+        ]}
+        requireText={account.login}
+        requireHint={t("confirm.typeLoginToConfirm", { login: account.login })}
+        confirmLabel={t("auth.removeConfirmButton")}
+        busy={remove2faBusy}
+        onCancel={() => !remove2faBusy && setRemove2faOpen(false)}
+        onConfirm={async () => {
+          setRemove2faBusy(true);
+          try {
+            await removeAuthenticator(account.login);
+            toast("success", t("auth.remove"));
+            setRemove2faOpen(false);
+          } catch (e: any) {
+            toast("error", String(e));
+          } finally {
+            setRemove2faBusy(false);
+          }
+        }}
+      />
     </div>
   );
 }

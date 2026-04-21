@@ -3,10 +3,11 @@ import { useApp } from "../state/store";
 import { useI18n, type Lang } from "../i18n";
 import type { LaunchMode } from "../api/tauri";
 import { SandboxieInstallModal } from "./SandboxieInstallModal";
+import type { Route } from "../App";
 
 interface Props {
-  view: "main" | "settings";
-  setView(v: "main" | "settings"): void;
+  view: Route;
+  setView(v: Route): void;
   toggleLog(): void;
 }
 
@@ -16,8 +17,11 @@ export function Sidebar({ view, setView, toggleLog }: Props) {
   const sbStatus = useApp((s) => s.sbStatus);
   const sandboxie = useApp((s) => s.sandboxie);
   const setMode = useApp((s) => s.setDefaultMode);
+  const authStatus = useApp((s) => s.authStatus);
   const mode: LaunchMode = settings?.defaultLaunchMode ?? "switch";
   const [installOpen, setInstallOpen] = useState(false);
+
+  const authCount = Object.values(authStatus).filter((a) => a.hasAuthenticator).length;
 
   const choose = async (m: LaunchMode) => {
     if (m === mode) return;
@@ -63,6 +67,22 @@ export function Sidebar({ view, setView, toggleLog }: Props) {
       <div className="sb-spacer" />
 
       <div className="sb-section">
+        <div className="sb-tabs">
+          <button
+            className={`sb-tab ${view === "main" ? "active" : ""}`}
+            onClick={() => setView("main")}
+          >
+            👤 {t("nav.accounts")}
+          </button>
+          <button
+            className={`sb-tab ${view === "auth" ? "active" : ""}`}
+            onClick={() => setView("auth")}
+            data-tip={t("auth.sidebarTip")}
+          >
+            🔑 {t("nav.authenticator")}
+            {authCount > 0 && <span className="sb-badge">{authCount}</span>}
+          </button>
+        </div>
         <div className="lang-toggle">
           <button
             className={`xs ${lang === "ru" ? "active" : ""}`}

@@ -1,10 +1,21 @@
 import { api } from "../api/tauri";
 import { useI18n } from "../i18n";
+import { useApp } from "../state/store";
 
 export function TitleBar() {
   const { t } = useI18n();
+  const addAuthActive = useApp((s) => s.addAuthActive);
   const onMinimize = () => api.minimizeWindow();
-  const onClose = () => api.closeWindow();
+  const onClose = () => {
+    if (addAuthActive) {
+      // The wizard may be mid-create/finalize — closing the window at that
+      // point would leak a half-enrolled authenticator (Steam-side record
+      // exists, secrets lost if we don't also persist). Confirm before kill.
+      const ok = window.confirm(t("tb.closeAddAuthConfirm"));
+      if (!ok) return;
+    }
+    api.closeWindow();
+  };
   // Use Tauri's data attribute so the OS handles drag without flicker.
   return (
     <div className="titlebar">

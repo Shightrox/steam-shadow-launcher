@@ -3,10 +3,12 @@
 mod commands;
 mod download;
 mod error;
+mod http;
 mod junction;
 mod launcher;
 mod library;
 mod sandboxie;
+mod sda;
 mod settings;
 mod shortcut;
 mod steam_paths;
@@ -37,6 +39,11 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // Kick the background confirmation poller once the app is up.
+            crate::sda::poller::start(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::detect_main_steam,
             commands::get_settings,
@@ -72,6 +79,34 @@ fn main() {
             commands::launch_game,
             commands::open_url,
             commands::create_account_shortcut,
+            commands::auth_open_folder,
+            commands::auth_status,
+            commands::auth_import_mafile,
+            commands::auth_export_mafile,
+            commands::auth_remove,
+            commands::auth_generate_code,
+            commands::auth_sync_time,
+            commands::auth_confirmations_list,
+            commands::auth_confirmations_respond,
+            commands::auth_login_begin,
+            commands::auth_login_submit_code,
+            commands::auth_login_poll,
+            commands::auth_login_refresh,
+            commands::auth_lock_status,
+            commands::auth_unlock,
+            commands::auth_lock,
+            commands::auth_set_master_password,
+            commands::auth_poller_configure,
+            commands::auth_poller_poke,
+            commands::auth_add_set_phone,
+            commands::auth_add_check_email,
+            commands::auth_add_send_sms,
+            commands::auth_add_verify_phone,
+            commands::auth_add_create,
+            commands::auth_add_finalize,
+            commands::auth_add_persist,
+            commands::auth_add_cancel,
+            commands::auth_add_diagnose,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

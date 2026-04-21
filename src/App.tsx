@@ -3,11 +3,20 @@ import { useApp } from "./state/store";
 import { FirstRunWizard } from "./views/FirstRunWizard";
 import { MainView } from "./views/MainView";
 import { SettingsView } from "./views/SettingsView";
+import { AuthenticatorView } from "./views/AuthenticatorView";
 import { LogDrawer } from "./components/LogDrawer";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
 import { ToastHost } from "./components/ToastHost";
 import { useI18n, type Lang } from "./i18n";
+import { listen } from "@tauri-apps/api/event";
+import {
+  AUTH_AUTO_CONFIRMED_EVENT,
+  AUTH_CONFIRMS_EVENT,
+  type Confirmation,
+} from "./api/tauri";
+
+export type Route = "main" | "settings" | "auth";
 
 // Block right-click, DevTools hotkeys, reload etc. in production-ish way.
 function installGuards() {
@@ -41,16 +50,29 @@ function installGuards() {
     "selectstart",
     (e) => {
       const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag !== "INPUT" && tag !== "TEXTAREA") e.preventDefault();
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      // Allow text selection inside destructive-confirm dialogs so the user
+      // can copy the literal type-to-confirm phrase.
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest(".confirm-body")) return;
+      e.preventDefault();
     },
     true
   );
 }
 
 export default function App() {
-  const { settings, bootstrap } = useApp();
+  const {
+    settings,
+    accounts,
+    authStatus,
+    bootstrap,
+    refreshCode,
+    mergeConfirmations,
+    toast,
+  } = useApp();
   const { t, setLang, lang } = useI18n();
-  const [route, setRoute] = useState<"main" | "settings">("main");
+  const [route, setRoute] = useState<Route>("main");
   const [logOpen, setLogOpen] = useState(false);
 
   useEffect(() => {
@@ -58,11 +80,59 @@ export default function App() {
     bootstrap();
   }, []);
 
+  // P11 M5: Listen for poller events from the Rust backend.
+  useEffect(() => {
+    const unlisteners: Array<Promise<() => void>> = [];
+    unlisteners.push(
+      listen<{ login: string; count: number; items: Confirmation[] }>(
+        AUTH_CONFIRMS_EVENT,
+        (e) => {
+          mergeConfirmations(e.payload.login, e.payload.items);
+        },
+      ),
+    );
+    unlisteners.push(
+      listen<{ login: string; ids: string[] }>(AUTH_AUTO_CONFIRMED_EVENT, (e) => {
+        toast(
+          "success",
+          t("auth.poller.autoConfirmed", {
+            count: e.payload.ids.length,
+            login: e.payload.login,
+          }),
+        );
+      }),
+    );
+    return () => {
+      unlisteners.forEach((p) => p.then((fn) => fn()));
+    };
+  }, []);
+
   useEffect(() => {
     if (settings?.language && settings.language !== lang) {
       setLang(settings.language as Lang);
     }
   }, [settings?.language]);
+
+  // P11: refresh all guard codes every 30 seconds + initial pull.
+  useEffect(() => {
+    const loginsWithAuth = accounts
+      .filter((a) => a.hasAuthenticator || authStatus[a.login]?.hasAuthenticator)
+      .map((a) => a.login);
+    if (!loginsWithAuth.length) return;
+    let cancelled = false;
+    const pump = async () => {
+      for (const login of loginsWithAuth) {
+        if (cancelled) return;
+        await refreshCode(login);
+      }
+    };
+    pump();
+    const iv = setInterval(pump, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [accounts, authStatus]);
 
   if (!settings) {
     return (
@@ -98,6 +168,8 @@ export default function App() {
           <div className="content">
             {route === "settings" ? (
               <SettingsView onClose={() => setRoute("main")} />
+            ) : route === "auth" ? (
+              <AuthenticatorView />
             ) : (
               <MainView />
             )}

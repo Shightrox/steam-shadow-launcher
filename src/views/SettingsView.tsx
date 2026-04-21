@@ -3,6 +3,8 @@ import { api, pickFolder } from "../api/tauri";
 import { useApp } from "../state/store";
 import { WorkspaceChangeDialog } from "../components/WorkspaceChangeDialog";
 import { SandboxieInstallModal } from "../components/SandboxieInstallModal";
+import { AuthSecuritySection } from "../components/AuthSecuritySection";
+import { AuthPollerSection } from "../components/AuthPollerSection";
 import { useI18n } from "../i18n";
 
 export function SettingsView({ onClose }: { onClose(): void }) {
@@ -142,6 +144,9 @@ export function SettingsView({ onClose }: { onClose(): void }) {
           </button>
         </div>
       </div>
+
+      <AuthSecuritySection />
+      <AuthPollerSection />
 
       <WorkspaceChangeDialog
         open={!!pendingNew}
