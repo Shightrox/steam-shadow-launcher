@@ -34,11 +34,15 @@ Steam Desktop Autheticator + Account Switcher + Parrallel Multi Launcher with Ai
 
 <p align="center">
   <img src="docs/screenshots/main_screen.png" alt="Главный экран" width="760"><br>
-  <em>Главный экран — карточки аккаунтов, переключатель режима, статус песочниц.</em>
+  <em>Главный экран — карточки аккаунтов с TOTP-кодами Steam Guard, переключатель Switch/Sandbox.</em>
 </p>
 <p align="center">
-  <img src="docs/screenshots/game_screen.png" alt="Выбор игры" width="760"><br>
-  <em>Выбор игры — обложки из локального кэша, запуск в один клик.</em>
+  <img src="docs/screenshots/sda_screen.png" alt="Steam Desktop Authenticator" width="760"><br>
+  <em>Раздел Authenticator — коды, подтверждения трейдов и маркета, авто-confirm, мастер-пароль.</em>
+</p>
+<p align="center">
+  <img src="docs/screenshots/authprocess_screen.png" alt="Привязка Steam Guard" width="760"><br>
+  <em>Мастер привязки нового Steam Guard — диагностика состояния аккаунта и подсказка по ходу.</em>
 </p>
 <p align="center">
   <img src="docs/screenshots/settings_screen.png" alt="Настройки" width="760"><br>
