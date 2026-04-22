@@ -14,6 +14,7 @@ mod shortcut;
 mod steam_paths;
 mod steam_process;
 mod switcher;
+mod updater;
 mod vdf;
 mod workspace;
 
@@ -107,6 +108,8 @@ fn main() {
             commands::auth_add_persist,
             commands::auth_add_cancel,
             commands::auth_add_diagnose,
+            commands::check_update,
+            commands::apply_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

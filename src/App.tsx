@@ -8,12 +8,15 @@ import { LogDrawer } from "./components/LogDrawer";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
 import { ToastHost } from "./components/ToastHost";
+import { UpdateModal } from "./components/UpdateModal";
 import { useI18n, type Lang } from "./i18n";
 import { listen } from "@tauri-apps/api/event";
 import {
   AUTH_AUTO_CONFIRMED_EVENT,
   AUTH_CONFIRMS_EVENT,
+  api,
   type Confirmation,
+  type UpdateInfo,
 } from "./api/tauri";
 
 export type Route = "main" | "settings" | "auth";
@@ -74,10 +77,29 @@ export default function App() {
   const { t, setLang, lang } = useI18n();
   const [route, setRoute] = useState<Route>("main");
   const [logOpen, setLogOpen] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 
   useEffect(() => {
     installGuards();
     bootstrap();
+  }, []);
+
+  // Background update check on startup. We wait a few seconds so we don't
+  // race with bootstrap()'s settings load + Steam detection. The check is
+  // best-effort: any failure (offline, GitHub down, rate-limit) is silently
+  // dropped so the launcher still boots.
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      try {
+        const info = await api.checkUpdate();
+        if (info.has_update && info.download_url) {
+          setUpdateInfo(info);
+        }
+      } catch {
+        /* network errors are non-fatal */
+      }
+    }, 4000);
+    return () => clearTimeout(t);
   }, []);
 
   // P11 M5: Listen for poller events from the Rust backend.
@@ -187,6 +209,9 @@ export default function App() {
         <span>v{__APP_VERSION__}</span>
       </div>
       <LogDrawer open={logOpen} onClose={() => setLogOpen(false)} />
+      {updateInfo && (
+        <UpdateModal info={updateInfo} onDismiss={() => setUpdateInfo(null)} />
+      )}
       <ToastHost />
     </div>
   );

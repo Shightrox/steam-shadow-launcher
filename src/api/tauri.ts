@@ -228,6 +228,19 @@ export interface AddDiagnostic {
     | "blocker-already-mobile";
 }
 
+/** Result of `check_update`. */
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  has_update: boolean;
+  asset_name: string | null;
+  download_url: string | null;
+  asset_size: number | null;
+  release_url: string;
+  release_title: string;
+  notes: string;
+}
+
 export const api = {
   detectMainSteam: () => invoke<MainSteamInfo>("detect_main_steam"),
   getSettings: () => invoke<Settings>("get_settings"),
@@ -338,6 +351,9 @@ export const api = {
   authAddCancel: (login: string) => invoke<void>("auth_add_cancel", { login }),
   authAddDiagnose: (login: string) =>
     invoke<AddDiagnostic>("auth_add_diagnose", { login }),
+  // ── Self-update ─────────────────────────────────────────────────────
+  checkUpdate: () => invoke<UpdateInfo>("check_update"),
+  applyUpdate: (url: string) => invoke<void>("apply_update", { url }),
 };
 
 export async function pickFolder(title: string): Promise<string | null> {

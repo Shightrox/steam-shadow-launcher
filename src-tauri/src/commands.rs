@@ -269,6 +269,36 @@ pub fn close_window(app: tauri::AppHandle) -> AppResult<()> {
     Ok(())
 }
 
+// ── Self-update ──────────────────────────────────────────────────────────
+//
+// `check_update` hits GitHub (cached at the HTTP layer) and reports back
+// whether a newer release is available. `apply_update` swaps the live exe
+// with the freshly-downloaded portable build and exits the app — the
+// detached batch script then re-launches the new version.
+
+#[tauri::command]
+pub async fn check_update() -> AppResult<crate::updater::UpdateInfo> {
+    tauri::async_runtime::spawn_blocking(crate::updater::check_update)
+        .await
+        .map_err(|e| AppError::Other(format!("check_update join: {e}")))?
+}
+
+#[tauri::command]
+pub async fn apply_update(app: tauri::AppHandle, url: String) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || crate::updater::apply_update(&url))
+        .await
+        .map_err(|e| AppError::Other(format!("apply_update join: {e}")))??;
+    // Give the renderer ~300ms to flush the "restarting" toast before we
+    // pull the rug. The detached cmd will wait for our PID to disappear
+    // before promoting the new exe.
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        app_clone.exit(0);
+    });
+    Ok(())
+}
+
 #[tauri::command]
 pub fn minimize_window(app: tauri::AppHandle) -> AppResult<()> {
     use tauri::Manager;
