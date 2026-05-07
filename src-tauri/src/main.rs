@@ -82,6 +82,7 @@ fn main() {
             commands::create_account_shortcut,
             commands::auth_open_folder,
             commands::auth_status,
+            commands::auth_session_state,
             commands::auth_import_mafile,
             commands::auth_export_mafile,
             commands::auth_remove,

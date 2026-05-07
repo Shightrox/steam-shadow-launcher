@@ -477,6 +477,8 @@ pub struct AccountAuthStatus {
     pub account_name: Option<String>,
     #[serde(rename = "importedAt")]
     pub imported_at: Option<String>,
+    #[serde(rename = "sessionState")]
+    pub session_state: sda::session_state::SessionState,
 }
 
 /// Return per-account authenticator presence. Does NOT load shared_secret.
@@ -485,17 +487,43 @@ pub fn auth_status() -> AppResult<Vec<AccountAuthStatus>> {
     let s = settings::load()?;
     let ws = require_workspace(&s)?;
     let accounts = workspace::list_accounts(&ws)?;
+    let now = sda::session_state::now_secs();
     let mut out = Vec::with_capacity(accounts.len());
     for a in accounts {
         let has = sda::vault::has_any(&ws, &a.login);
+        let session_state = if has && a.has_authenticator {
+            // Lazy load only when there's actually something to classify.
+            // load_plain may fail if the vault is locked — treat that as
+            // NoSession so the UI doesn't lie about a session it can't see.
+            match sda::vault::load_plain(&ws, &a.login) {
+                Ok(Some(mf)) => sda::session_state::classify(&mf, &a.login, now),
+                _ => sda::session_state::SessionState::NoSession,
+            }
+        } else {
+            sda::session_state::SessionState::NoSession
+        };
         out.push(AccountAuthStatus {
             login: a.login.clone(),
             has_authenticator: has && a.has_authenticator,
             account_name: if has { Some(a.login.clone()) } else { None },
             imported_at: a.authenticator_imported_at.clone(),
+            session_state,
         });
     }
     Ok(out)
+}
+
+/// Return the current SessionState for a single account. Cheap; safe to
+/// poll on UI mount or after operations that may have changed the session.
+#[tauri::command]
+pub fn auth_session_state(login: String) -> AppResult<sda::session_state::SessionState> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s)?;
+    let now = sda::session_state::now_secs();
+    match sda::vault::load_plain(&ws, &login)? {
+        Some(mf) => Ok(sda::session_state::classify(&mf, &login, now)),
+        None => Ok(sda::session_state::SessionState::NoSession),
+    }
 }
 
 /// Import a `.maFile` into the given shadow account. Accepts either a JSON
@@ -561,6 +589,8 @@ pub fn auth_import_mafile(
     sda::vault::save_plain(&ws, &login, &mf)?;
     workspace::set_authenticator_meta(&ws, &login, true, Some(mf.account_name.clone()))?;
     tracing::info!("sda: imported maFile for login={}", login);
+    let now = sda::session_state::now_secs();
+    let session_state = sda::session_state::classify(&mf, &login, now);
     Ok(AccountAuthStatus {
         login: login.clone(),
         has_authenticator: true,
@@ -571,6 +601,7 @@ pub fn auth_import_mafile(
                 .map(|d| d.as_secs().to_string())
                 .unwrap_or_default(),
         ),
+        session_state,
     })
 }
 
@@ -629,7 +660,7 @@ pub fn auth_confirmations_list(login: String) -> AppResult<Vec<sda::confirmation
     let ws = require_workspace(&s)?;
     let mf = sda::vault::load_plain(&ws, &login)?
         .ok_or_else(|| AppError::NotFound(format!("no maFile for {login}")))?;
-    sda::confirmations::list(&mf)
+    sda::confirmations::list(&mf, &login)
 }
 
 /// Allow or reject a batch of confirmations.
@@ -648,7 +679,7 @@ pub fn auth_confirmations_respond(
         "reject" | "cancel" | "deny" => sda::confirmations::Op::Reject,
         _ => return Err(AppError::Other(format!("unknown op: {op}"))),
     };
-    sda::confirmations::respond(&mf, &ids, op)
+    sda::confirmations::respond(&mf, &login, &ids, op)
 }
 
 /// Step 1+2 of mobile login: fetch RSA key, encrypt password, open session.
@@ -728,6 +759,8 @@ pub fn auth_login_poll(
             sda::vault::save_plain(&ws, &login, &mf)?;
             workspace::set_authenticator_meta(&ws, &login, true, Some(mf.account_name.clone()))?;
         }
+        // Fresh login → any prior "needs relogin" sentinel is now stale.
+        sda::relogin_flag::clear(&login);
     }
     Ok(state)
 }
@@ -745,11 +778,19 @@ pub fn auth_login_refresh(login: String) -> AppResult<()> {
         .as_ref()
         .ok_or_else(|| AppError::NotReady("NO_SESSION".into()))?
         .clone();
-    let new_tok = sda::login::refresh_access_token(&sess.refresh_token, &sess.steam_id.to_string())?;
+    let new_tok = match sda::login::refresh_access_token(&sess.refresh_token, &sess.steam_id.to_string()) {
+        Ok(t) => t,
+        Err(e) => {
+            // Steam refused the refresh_token — treat as full re-login required.
+            sda::relogin_flag::mark(&login);
+            return Err(e);
+        }
+    };
     let mut updated = sess.clone();
     updated.access_token = new_tok;
     mf.session = Some(updated);
     sda::vault::save_plain(&ws, &login, &mf)?;
+    sda::relogin_flag::clear(&login);
     Ok(())
 }
 

@@ -11,7 +11,7 @@
 //! Errors are logged and swallowed — a temporary network hiccup shouldn't
 //! kill the loop.
 
-use crate::sda::{confirmations, vault};
+use crate::sda::{confirmations, login as sda_login, relogin_flag, session_state, vault};
 use crate::{settings, workspace};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -69,6 +69,7 @@ fn tick_signal() -> &'static Mutex<Option<std::sync::mpsc::Sender<()>>> {
 
 pub const EVENT_CONFIRMS: &str = "auth://confirmations-changed";
 pub const EVENT_AUTO: &str = "auth://auto-confirmed";
+pub const EVENT_SESSION_STATE: &str = "auth://session-state";
 
 #[derive(Debug, Clone, Serialize)]
 struct ConfChanged {
@@ -81,6 +82,22 @@ struct ConfChanged {
 struct AutoConfirmed {
     login: String,
     ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SessionStateChanged {
+    login: String,
+    state: session_state::SessionState,
+}
+
+fn emit_state(app: &AppHandle, login: &str, state: session_state::SessionState) {
+    let _ = app.emit(
+        EVENT_SESSION_STATE,
+        SessionStateChanged {
+            login: login.to_string(),
+            state,
+        },
+    );
 }
 
 /// Start the poller. Idempotent — if already running, does nothing.
@@ -134,7 +151,7 @@ fn run_once(app: &AppHandle, s: &settings::Settings) {
         if backoff_should_skip(&a.login) {
             continue;
         }
-        let Ok(Some(mf)) = vault::load_plain(ws, &a.login) else {
+        let Ok(Some(mut mf)) = vault::load_plain(ws, &a.login) else {
             continue;
         };
         // Skip half-enrolled accounts — the secrets are real but the server
@@ -143,11 +160,56 @@ fn run_once(app: &AppHandle, s: &settings::Settings) {
         if mf.fully_enrolled == Some(false) {
             continue;
         }
-        // Skip if there's no session — we'd just get `CONF_NO_SESSION`.
-        if mf.session.as_ref().map(|s| s.access_token.is_empty()).unwrap_or(true) {
-            continue;
+
+        // Classify session and either silently refresh, give up, or proceed.
+        let now = session_state::now_secs();
+        let st = session_state::classify(&mf, &a.login, now);
+        match st {
+            session_state::SessionState::Refreshable => {
+                let (refresh, sid) = mf
+                    .session
+                    .as_ref()
+                    .map(|s| (s.refresh_token.clone(), s.steam_id.to_string()))
+                    .unwrap_or_default();
+                match sda_login::refresh_access_token(&refresh, &sid) {
+                    Ok(new_tok) => {
+                        if let Some(s) = mf.session.as_mut() {
+                            s.access_token = new_tok;
+                        }
+                        if let Err(e) = vault::save_plain(ws, &a.login, &mf) {
+                            tracing::warn!(
+                                "auth poller: save refreshed mafile {}: {}",
+                                a.login,
+                                e
+                            );
+                        }
+                        relogin_flag::clear(&a.login);
+                        emit_state(app, &a.login, session_state::SessionState::Ok);
+                        tracing::info!("auth poller: silent-refreshed access for {}", a.login);
+                        // fall through to confirmations::list below
+                    }
+                    Err(e) => {
+                        tracing::warn!("auth poller: refresh failed for {}: {}", a.login, e);
+                        relogin_flag::mark(&a.login);
+                        emit_state(app, &a.login, session_state::SessionState::NeedsRelogin);
+                        continue;
+                    }
+                }
+            }
+            session_state::SessionState::NeedsRelogin => {
+                emit_state(app, &a.login, session_state::SessionState::NeedsRelogin);
+                continue;
+            }
+            session_state::SessionState::NoSession => {
+                emit_state(app, &a.login, session_state::SessionState::NoSession);
+                continue;
+            }
+            session_state::SessionState::Ok => {
+                emit_state(app, &a.login, session_state::SessionState::Ok);
+            }
         }
-        match confirmations::list(&mf) {
+
+        match confirmations::list(&mf, &a.login) {
             Ok(items) => {
                 backoff_record_ok(&a.login);
                 let _ = app.emit(
@@ -165,7 +227,7 @@ fn run_once(app: &AppHandle, s: &settings::Settings) {
                     .map(|c| c.id.clone())
                     .collect();
                 if !auto_ids.is_empty() {
-                    match confirmations::respond(&mf, &auto_ids, confirmations::Op::Allow) {
+                    match confirmations::respond(&mf, &a.login, &auto_ids, confirmations::Op::Allow) {
                         Ok(_) => {
                             tracing::info!(
                                 "auth poller: auto-confirmed {} items for {}",

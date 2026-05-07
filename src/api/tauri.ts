@@ -116,16 +116,20 @@ export interface PollerConfig {
 export const SANDBOXIE_PROGRESS_EVENT = "sandboxie-download-progress";
 export const AUTH_CONFIRMS_EVENT = "auth://confirmations-changed";
 export const AUTH_AUTO_CONFIRMED_EVENT = "auth://auto-confirmed";
+export const AUTH_SESSION_STATE_EVENT = "auth://session-state";
 
 export type LaunchOutcome =
   | { kind: "switch"; pid: number; previousAutologin: string | null }
   | { kind: "sandbox"; pid: number };
+
+export type SessionState = "ok" | "refreshable" | "needs_relogin" | "no_session";
 
 export interface AccountAuthStatus {
   login: string;
   hasAuthenticator: boolean;
   accountName: string | null;
   importedAt: string | null;
+  sessionState: SessionState;
 }
 
 export interface GuardCode {
@@ -294,6 +298,8 @@ export const api = {
     invoke<string>("auth_open_folder", { login }),
   // ── P11: Authenticator ───────────────────────────────────────────────
   authStatus: () => invoke<AccountAuthStatus[]>("auth_status"),
+  authSessionState: (login: string) =>
+    invoke<SessionState>("auth_session_state", { login }),
   authImportMafile: (login: string, source: string, encryptionPassword?: string) =>
     invoke<AccountAuthStatus>("auth_import_mafile", {
       login,

@@ -11,6 +11,7 @@ import {
   type LaunchMode,
   type MainSteamInfo,
   type SandboxieInfo,
+  type SessionState,
   type Settings,
 } from "../api/tauri";
 
@@ -41,6 +42,7 @@ interface AppState {
   toasts: Toast[];
   launchingLogin: string | null;
   authStatus: Record<string, AccountAuthStatus>;
+  sessionStates: Record<string, SessionState>;
   codes: Record<string, GuardCode>;
   confirmations: Record<string, Confirmation[]>;
   confLoading: Record<string, boolean>;
@@ -70,6 +72,9 @@ interface AppState {
   installSandboxie(installerPath: string): Promise<void>;
   downloadAndInstallSandboxie(): Promise<boolean>;
   refreshAuthStatus(): Promise<void>;
+  refreshSessionState(login: string): Promise<void>;
+  setSessionState(login: string, state: SessionState): void;
+  refreshAccessToken(login: string): Promise<boolean>;
   importMafile(login: string, source: string, encryptionPassword?: string): Promise<void>;
   exportMafile(login: string, target: string): Promise<void>;
   removeAuthenticator(login: string): Promise<void>;
@@ -97,6 +102,7 @@ export const useApp = create<AppState>((set, get) => ({
   toasts: [],
   launchingLogin: null,
   authStatus: {},
+  sessionStates: {},
   codes: {},
   confirmations: {},
   confLoading: {},
@@ -293,10 +299,39 @@ export const useApp = create<AppState>((set, get) => ({
     try {
       const list = await api.authStatus();
       const map: Record<string, AccountAuthStatus> = {};
-      for (const it of list) map[it.login] = it;
-      set({ authStatus: map });
+      const states: Record<string, SessionState> = { ...get().sessionStates };
+      for (const it of list) {
+        map[it.login] = it;
+        states[it.login] = it.sessionState;
+      }
+      set({ authStatus: map, sessionStates: states });
     } catch (e: any) {
       get().log("warn", `authStatus: ${e}`);
+    }
+  },
+
+  async refreshSessionState(login: string) {
+    try {
+      const st = await api.authSessionState(login);
+      set((s) => ({ sessionStates: { ...s.sessionStates, [login]: st } }));
+    } catch (e: any) {
+      console.warn(`refreshSessionState(${login}):`, e);
+    }
+  },
+
+  setSessionState(login, state) {
+    set((s) => ({ sessionStates: { ...s.sessionStates, [login]: state } }));
+  },
+
+  async refreshAccessToken(login: string) {
+    try {
+      await api.authLoginRefresh(login);
+      await get().refreshSessionState(login);
+      return true;
+    } catch (e: any) {
+      get().toast("error", String(e));
+      await get().refreshSessionState(login);
+      return false;
     }
   },
 
@@ -343,9 +378,17 @@ export const useApp = create<AppState>((set, get) => ({
       set((s) => ({ confirmations: { ...s.confirmations, [login]: list } }));
     } catch (e: any) {
       const msg = String(e);
-      // Distinguish "needs relogin" from generic failure.
-      if (msg.includes("CONF_NEEDS_RELOGIN") || msg.includes("CONF_NO_SESSION")) {
-        get().toast("error", "Session expired — re-login required");
+      // "needs relogin" / "no session" are expected states surfaced by the
+      // session-state badge, not generic errors — don't spam toasts for them.
+      if (msg.includes("CONF_NEEDS_RELOGIN")) {
+        get().setSessionState(login, "needs_relogin");
+      } else if (
+        msg.includes("CONF_NO_SESSION") ||
+        msg.includes("CONF_NO_ACCESS_TOKEN") ||
+        msg.includes("CONF_NO_SESSION_ID") ||
+        msg.includes("CONF_NO_STEAM_ID")
+      ) {
+        get().setSessionState(login, "no_session");
       } else {
         get().toast("error", `Confirmations: ${msg}`);
       }

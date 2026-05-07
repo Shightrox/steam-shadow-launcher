@@ -287,6 +287,15 @@ const RU: Dict = {
   "auth.login.next": "Далее",
   "auth.login.submit": "Отправить",
   "auth.login.openInCard": "Войти (получить сессию)",
+  "auth.session.staleTitle": "Сессия Steam устарела",
+  "auth.session.staleHint":
+    "Подтверждения и трейды на паузе. Можно обновить без пароля.",
+  "auth.session.refreshAction": "Обновить",
+  "auth.session.expiredTitle": "Нужен повторный вход в Steam",
+  "auth.session.expiredHint":
+    "Steam отверг сохранённую сессию (смена пароля или logout-everywhere). Понадобится пароль.",
+  "auth.session.reloginAction": "Войти в Steam",
+  "auth.session.refreshed": "Сессия обновлена",
   "auth.security.title": "МАСТЕР-ПАРОЛЬ",
   "auth.security.subtitle":
     "Шифрует все .maFile на диске (Argon2id + AES-256-GCM). Потеря пароля = потеря секретов.",
@@ -682,6 +691,15 @@ const EN: Dict = {
   "auth.login.next": "Next",
   "auth.login.submit": "Submit",
   "auth.login.openInCard": "Log in (get session)",
+  "auth.session.staleTitle": "Steam session is stale",
+  "auth.session.staleHint":
+    "Trades and confirmations are paused. We can refresh without a password.",
+  "auth.session.refreshAction": "Refresh",
+  "auth.session.expiredTitle": "Re-login required",
+  "auth.session.expiredHint":
+    "Steam rejected the saved session (password change or sign-out-everywhere). Password needed.",
+  "auth.session.reloginAction": "Sign in to Steam",
+  "auth.session.refreshed": "Session refreshed",
   "auth.security.title": "MASTER PASSWORD",
   "auth.security.subtitle":
     "Encrypts every .maFile on disk (Argon2id + AES-256-GCM). Lose the password = lose the secrets.",

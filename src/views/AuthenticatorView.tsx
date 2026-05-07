@@ -16,11 +16,15 @@ export function AuthenticatorView() {
     authStatus,
     authLock,
     codes,
+    sessionStates,
     importMafile,
     exportMafile,
     removeAuthenticator,
     refreshCode,
     refreshAuthStatus,
+    refreshSessionState,
+    refreshAccessToken,
+    refreshConfirmations,
     unlockAuth,
     add,
     toast,
@@ -56,6 +60,7 @@ export function AuthenticatorView() {
   const [unlockBusy, setUnlockBusy] = useState(false);
   const [removeAuthFor, setRemoveAuthFor] = useState<string | null>(null);
   const [removeAuthBusy, setRemoveAuthBusy] = useState(false);
+  const [refreshBusy, setRefreshBusy] = useState(false);
 
   const locked = !!authLock?.enabled && !authLock.unlocked && !!authLock.hasEncryptedFiles;
 
@@ -79,6 +84,7 @@ export function AuthenticatorView() {
   // If the code in store has run down, fetch a fresh one.
   useEffect(() => {
     if (!selected) return;
+    refreshSessionState(selected);
     const c = codes[selected];
     if (!c) {
       refreshCode(selected);
@@ -388,6 +394,58 @@ export function AuthenticatorView() {
                     </span>
                   )}
                 </div>
+                {(() => {
+                  const st = sessionStates[active.login] ?? "ok";
+                  if (st === "ok") return null;
+                  const refreshable = st === "refreshable";
+                  return (
+                    <div className={`auth-session-badge ${st}`}>
+                      <span className="auth-session-badge-icon">
+                        {refreshable ? "⟳" : "⚠"}
+                      </span>
+                      <div className="auth-session-badge-text">
+                        <div className="auth-session-badge-title">
+                          {refreshable
+                            ? t("auth.session.staleTitle")
+                            : t("auth.session.expiredTitle")}
+                        </div>
+                        <div className="auth-session-badge-hint">
+                          {refreshable
+                            ? t("auth.session.staleHint")
+                            : t("auth.session.expiredHint")}
+                        </div>
+                      </div>
+                      <button
+                        className="xs primary"
+                        disabled={refreshBusy}
+                        onClick={async () => {
+                          if (refreshable) {
+                            setRefreshBusy(true);
+                            try {
+                              const ok = await refreshAccessToken(active.login);
+                              if (ok) {
+                                toast("success", t("auth.session.refreshed"));
+                                await refreshConfirmations(active.login);
+                              }
+                            } finally {
+                              setRefreshBusy(false);
+                            }
+                          } else {
+                            setLoginFor(active.login);
+                          }
+                        }}
+                      >
+                        {refreshBusy ? (
+                          <Spinner size="xs" inline />
+                        ) : refreshable ? (
+                          t("auth.session.refreshAction")
+                        ) : (
+                          t("auth.session.reloginAction")
+                        )}
+                      </button>
+                    </div>
+                  );
+                })()}
                 <ConfirmationsSection login={active.login} />
               </div>
             )}

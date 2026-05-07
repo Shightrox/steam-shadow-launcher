@@ -22,6 +22,7 @@
 use crate::error::{AppError, AppResult};
 use crate::http;
 use crate::sda::mafile::MaFile;
+use crate::sda::relogin_flag;
 use crate::sda::totp;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
@@ -178,7 +179,7 @@ fn query_params(mafile: &MaFile, tag: &str) -> AppResult<String> {
 }
 
 /// Fetch the current confirmation list.
-pub fn list(mafile: &MaFile) -> AppResult<Vec<Confirmation>> {
+pub fn list(mafile: &MaFile, login: &str) -> AppResult<Vec<Confirmation>> {
     let client = session_client(mafile)?;
     let qs = query_params(mafile, "list")?;
     let url = format!("{BASE}/getlist?{qs}");
@@ -199,6 +200,7 @@ pub fn list(mafile: &MaFile) -> AppResult<Vec<Confirmation>> {
     let parsed: ListResponse = serde_json::from_str(&body)
         .map_err(|e| AppError::Other(format!("getlist JSON: {e}: {body}")))?;
     if parsed.needauth {
+        relogin_flag::mark(login);
         return Err(AppError::NotReady("CONF_NEEDS_RELOGIN".into()));
     }
     if !parsed.success {
@@ -211,12 +213,15 @@ pub fn list(mafile: &MaFile) -> AppResult<Vec<Confirmation>> {
             )));
         }
     }
+    // Steam accepted the cookies → session is healthy. Clear any stale flag.
+    relogin_flag::clear(login);
     Ok(parsed.conf)
 }
 
 /// Respond to multiple confirmations in a single call.
 pub fn respond(
     mafile: &MaFile,
+    login: &str,
     ids: &[String],
     op: Op,
 ) -> AppResult<Vec<RespondResult>> {
@@ -227,7 +232,7 @@ pub fn respond(
     // This costs an extra roundtrip but keeps the command ergonomic (the UI
     // has already displayed nonces, but bundling them in the respond command
     // would leak implementation detail).
-    let list_items = list(mafile)?;
+    let list_items = list(mafile, login)?;
     let mut pairs: Vec<(String, String)> = Vec::with_capacity(ids.len());
     for id in ids {
         let Some(row) = list_items.iter().find(|c| &c.id == id) else {

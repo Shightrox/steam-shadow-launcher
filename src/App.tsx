@@ -14,8 +14,10 @@ import { listen } from "@tauri-apps/api/event";
 import {
   AUTH_AUTO_CONFIRMED_EVENT,
   AUTH_CONFIRMS_EVENT,
+  AUTH_SESSION_STATE_EVENT,
   api,
   type Confirmation,
+  type SessionState,
   type UpdateInfo,
 } from "./api/tauri";
 
@@ -72,6 +74,7 @@ export default function App() {
     bootstrap,
     refreshCode,
     mergeConfirmations,
+    setSessionState,
     toast,
   } = useApp();
   const { t, setLang, lang } = useI18n();
@@ -123,6 +126,14 @@ export default function App() {
           }),
         );
       }),
+    );
+    unlisteners.push(
+      listen<{ login: string; state: SessionState }>(
+        AUTH_SESSION_STATE_EVENT,
+        (e) => {
+          setSessionState(e.payload.login, e.payload.state);
+        },
+      ),
     );
     return () => {
       unlisteners.forEach((p) => p.then((fn) => fn()));

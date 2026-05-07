@@ -12,5 +12,7 @@ pub mod crypto;
 pub mod login;
 pub mod mafile;
 pub mod poller;
+pub mod relogin_flag;
+pub mod session_state;
 pub mod totp;
 pub mod vault;

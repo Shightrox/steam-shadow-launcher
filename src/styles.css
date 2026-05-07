@@ -1133,6 +1133,47 @@ button:focus-visible,
   flex-wrap: wrap;
   gap: 4px;
 }
+.auth-session-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  background: var(--bg-elev-2);
+  font-size: 12px;
+}
+.auth-session-badge.refreshable {
+  border-left-color: var(--warn);
+  background: rgba(255, 197, 92, 0.06);
+}
+.auth-session-badge.needs_relogin,
+.auth-session-badge.no_session {
+  border-left-color: var(--danger);
+  background: rgba(255, 92, 92, 0.06);
+}
+.auth-session-badge-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+.auth-session-badge.refreshable .auth-session-badge-icon { color: var(--warn); }
+.auth-session-badge.needs_relogin .auth-session-badge-icon,
+.auth-session-badge.no_session .auth-session-badge-icon { color: var(--danger); }
+.auth-session-badge-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.auth-session-badge-title {
+  font-weight: 600;
+  color: var(--fg);
+}
+.auth-session-badge-hint {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
 .auth-code.pulse { animation: auth-pulse 1s infinite; }
 @keyframes auth-pulse {
   0%, 100% { color: var(--accent); text-shadow: 0 0 10px rgba(102, 255, 204, 0.3); }
