@@ -27,17 +27,49 @@ mod de_helpers {
     use serde::{Deserialize, Deserializer};
 
     /// Deserialize `null | missing | string` into `String`.
-    /// SDA / steamguard-cli sometimes emit `"SessionID": null` (and similar)
-    /// for fields the user hasn't populated yet; plain `#[serde(default)]`
-    /// only handles the *missing* case, not an explicit `null`.
     pub fn string_or_null<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
         Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+    }
+
+    /// Deserialize an `Option<u64>` that may arrive as a number, string, or null.
+    pub fn option_u64_or_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Val {
+            Num(u64),
+            Str(String),
+            Null,
+        }
+        match Option::<Val>::deserialize(d)? {
+            Some(Val::Num(n)) => Ok(Some(n)),
+            Some(Val::Str(s)) if s.is_empty() => Ok(None),
+            Some(Val::Str(s)) => s.parse::<u64>().map(Some).map_err(serde::de::Error::custom),
+            Some(Val::Null) | None => Ok(None),
+        }
+    }
+
+    /// Deserialize a `u64` that may arrive as either a JSON number or a string.
+    pub fn u64_or_string<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum NumOrStr {
+            Num(u64),
+            Str(String),
+        }
+        match NumOrStr::deserialize(d)? {
+            NumOrStr::Num(n) => Ok(n),
+            NumOrStr::Str(s) => s.parse::<u64>().map_err(serde::de::Error::custom),
+        }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ZeroizeOnDrop)]
 pub struct SessionData {
-    #[serde(rename = "SteamID", default)]
+    #[serde(
+        rename = "SteamID",
+        default,
+        deserialize_with = "de_helpers::u64_or_string"
+    )]
     pub steam_id: u64,
     #[serde(
         rename = "AccessToken",
@@ -87,7 +119,11 @@ pub struct MaFile {
         deserialize_with = "de_helpers::string_or_null"
     )]
     pub uri: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "de_helpers::option_u64_or_string"
+    )]
     pub server_time: Option<u64>,
     #[serde(
         default,
