@@ -15,6 +15,8 @@ class Handler(SimpleHTTPRequestHandler):
             ).encode("utf-8")
         elif path == "/mock.js":
             data = (root / "mock.js").read_bytes()
+        elif path == "/showcase.html":
+            data = (root / "showcase.html").read_bytes()
         elif path.startswith("/assets/") and ".." not in path:
             self.directory = str(dist)
             return super().do_GET()

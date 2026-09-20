@@ -1,224 +1,185 @@
 # Steam Shadow Launcher
 
-Steam Desktop Autheticator + Account Switcher + Parrallel Multi Launcher with AiO Sandboxie and more!
+Steam account switcher, parallel launcher and desktop authenticator for Windows.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-66ffcc)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-1f8c6e)
-![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%202-2fb58f)
+[![License: MIT](https://img.shields.io/badge/license-MIT-66edb7)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-242d29)
+![Source version](https://img.shields.io/badge/source-v0.2.5-242d29)
+[![Built with Tauri](https://img.shields.io/badge/Tauri-2-242d29)](https://tauri.app)
 
-🇷🇺 **Русский** · [🇬🇧 English](#-english)
+**Русский** · [English](#english) · [Releases](https://github.com/Shightrox/steam-shadow-launcher/releases)
 
----
+Компактные плитки аккаунтов, Steam Guard и запуск Steam в одном окне. Тёмный интерфейс с зелёными акцентами, пиксельным шрифтом, полупрозрачными панелями и плавными частицами на фоне.
 
-## Что умеет
+## Скриншоты v0.2.5
 
-- **Sandbox** — параллельный запуск нескольких клиентов Steam. Sandboxie ставится сам по клику.
-- **Switch** — быстрое переключение между аккаунтами основным процессом Steam, без песка.
-- **Вход без логинов/паролей** — авторизация по сохранённым сессиям с компа.
-- **Запуск игры** — можно сразу стартовать игру с выбранного аккаунта, обложки подтягиваются из кэша Steam.
-- **Ярлык на аккаунт** — `.lnk` для входа в конкретный профиль в один клик.
-- **Бэкапы и откат** — `loginusers.vdf` и `AutoLoginUser` сохраняются в одной точке восстановления. Хранятся до 10 точек без одинаковых повторов; старые служебные файлы преобразуются и очищаются автоматически.
-- **Пиксельный интерфейс со стеклом** — компактные плитки с аватаром, кодом Steam Guard и последним запуском; тёмная тема с зелёным акцентом и спокойными частицами. Прозрачность, частицы и анимация настраиваются.
-- **Подтверждения с предметами** — изображения продаж, раскрываемые списки «Вы отдаёте / Вы получаете» в обменах, общая очередь с фильтром по аккаунту.
-- **Портативная версия** — можно запускать как установленный, так и одним exe-файлом.
+Текущий интерфейс приложения с демонстрационными аккаунтами и операциями. Коды и идентификаторы на снимках вымышлены.
 
-### Новое в v0.2.0 — Steam Desktop Authenticator внутри лаунчера
+![Аккаунты: аватары, 2FA, последний запуск и работающая песочница](docs/screenshots/accounts-v025.jpg)
 
-- **Свой Steam Guard прямо в приложении.** Коды TOTP генерируются рядом с карточкой аккаунта, как в SDA / steamguard-cli.
-- **Импорт `.maFile`** из SDA / steamguard-cli одним кликом. Поддерживается и плейн, и зашифрованный формат.
-- **Привязка нового Steam Guard** — мастер на 13 шагов: логин → диагностика → телефон (или email-Guard без телефона) → активация → revocation-код → сохранение. Мобильник для этого не нужен.
-- **Автоподтверждение трейдов и market-листингов** в фоне. Исходящий трейд ушёл — через 15 секунд уже «accepted», без единого клика.
-- **Мастер-пароль.** Все `.maFile` шифруются Argon2id + AES-256-GCM. Без пароля с диска их не прочитать.
-- **Отвязка аутентификатора** по revocation-коду прямо из приложения.
-
-## Скриншоты
-
-В v0.2.5 оформление обновлено по согласованному эскизу: [изменения и проверки](docs/review-2026-09-19/FLUENT-IMPLEMENTATION.md).
-
-Ниже — предыдущий интерфейс v0.2.4, демонстрационные аккаунты и операции:
-
-<p align="center">
-  <img src="docs/screenshots/accounts-v024.png" alt="Аккаунты и доступ Steam Guard — v0.2.4" width="1000">
-</p>
-<p align="center">
-  <img src="docs/screenshots/confirmations-v024.png" alt="Продажа с изображением и состав обмена — v0.2.4" width="1000">
-</p>
+![Подтверждения: продажа с изображением и предметы обеих сторон обмена](docs/screenshots/confirmations-v025.jpg)
 
 <details>
-<summary>Скриншоты предыдущего интерфейса</summary>
+<summary>Настройки оформления</summary>
 
-<p align="center">
-  <img src="docs/screenshots/mainscreen.png" alt="Главный экран" width="760"><br>
-  <em>Главный экран — карточки аккаунтов с TOTP-кодами Steam Guard, переключатель Switch/Sandbox.</em>
-</p>
-<p align="center">
-  <img src="docs/screenshots/SDAscreen.png" alt="Steam Desktop Authenticator" width="760"><br>
-  <em>Раздел Authenticator — коды, подтверждения трейдов и маркета, авто-confirm, мастер-пароль.</em>
-</p>
-<p align="center">
-  <img src="docs/screenshots/authprocessscreen.png" alt="Привязка Steam Guard" width="760"><br>
-  <em>Мастер привязки нового Steam Guard — диагностика состояния аккаунта и подсказка по ходу.</em>
-</p>
-<p align="center">
-  <img src="docs/screenshots/settingsscreen.png" alt="Настройки" width="760"><br>
-  <em>Настройки — workspace, путь к Steam, Sandboxie-Plus, откат свитча.</em>
-</p>
+![Настройки плотности стекла, частиц и анимации](docs/screenshots/settings-v025.jpg)
 
 </details>
 
-## Установка
+## Возможности
 
-На странице [Releases](../../releases) — портативный `.exe`:
+- **Аккаунты и 2FA рядом.** Аватар, код с таймером и копированием, последний запуск, число запусков, избранное и состояние сессии внутри плитки. Есть поиск и режим списка.
+- **Switch.** Переключение основного Steam на выбранный аккаунт с использованием сохранённой авторизации.
+- **Sandbox.** Дополнительные клиенты Steam через Sandboxie-Plus, состояние песочниц и остановка выбранного клиента. Установка Sandboxie доступна из приложения.
+- **Игры и ярлыки.** Запуск установленной игры с выбранного аккаунта, обложки из кэша Steam и создание ярлыка аккаунта.
+- **Steam Guard.** Импорт и экспорт `.maFile`, локальная генерация кодов, мастер привязки нового аутентификатора и продолжение незавершённой привязки.
+- **Подтверждения.** Общая очередь продаж и обменов, фильтр по аккаунту, изображения предметов, раскрываемые списки «Вы отдаёте / Вы получаете», подтверждение или отклонение выбранных операций.
+- **Восстановление сессии.** Обновление токена; при необходимости — вход с сохранённым паролем и автоматическая отправка Steam Guard. Если Steam требует дополнительную проверку, приложение предлагает ручной вход.
+- **Фоновый опрос.** Настраиваемый интервал и отдельные переключатели автоподтверждения исходящих обменов и продаж. Автоподтверждение по умолчанию выключено.
+- **Оформление.** Плотность стекла, яркость частиц и анимация настраиваются. Размер окна можно менять; поддерживаются русский и английский языки.
+- **Восстановление после переключения.** Согласованные бэкапы Steam, откат последнего переключения и обслуживание папки `backups`.
 
-| Файл | Что это |
-|---|---|
-| `SteamShadowLauncher-v0.2.0-x64-portable.exe` | Один exe, никакой установки. Настройки лежат в `%APPDATA%\SteamShadowLauncher\`. |
-| `SHA256SUMS.txt` | Контрольные суммы. |
+## Установка и первый запуск
 
-Админ-права запрашиваются только когда реально нужны — для Sandbox-режима. Для Switch админка не требуется.
+Готовые сборки находятся в [Releases](https://github.com/Shightrox/steam-shadow-launcher/releases). Скачайте `SteamShadowLauncher-v<version>-x64-portable.exe`; контрольные суммы публикуются в `SHA256SUMS.txt`.
 
-Sandboxie-Plus не идёт в комплекте: при первом переключении на Sandbox лаунчер сам скачивает и ставит свежий релиз с [sandboxie-plus/Sandboxie](https://github.com/sandboxie-plus/Sandboxie).
+**Исходники и скриншоты в `main` — v0.2.5. Последняя опубликованная сборка — v0.2.3; для нового интерфейса пока нужна сборка из исходников.**
 
-## SWITCH vs SANDBOX
+1. Запустите приложение и выберите папку данных (workspace).
+2. Импортируйте аккаунты, сохранённые в локальном Steam, или добавьте аккаунт вручную. Если Steam больше не принимает сохранённую сессию, потребуется повторный вход.
+3. Выберите **Switch** для переключения основного Steam или **Sandbox** для параллельного запуска. Для Sandbox приложение предложит установить Sandboxie-Plus и запросит права администратора.
+4. Для 2FA импортируйте `.maFile` или откройте мастер в разделе **Steam Guard**. Привязка может потребовать проверку почты или телефона со стороны Steam.
 
-|  | SWITCH | SANDBOX |
+Portable-сборка не требует установки лаунчера. Настройки хранятся в `%APPDATA%\SteamShadowLauncher\`, данные аккаунтов — в выбранной папке workspace. Sandboxie-Plus устанавливается отдельно и не входит в `.exe` лаунчера.
+
+### Switch и Sandbox
+
+| | Switch | Sandbox |
 |---|---|---|
-| Закрывает основной Steam | Да (graceful → `-shutdown` → kill) | Нет |
-| Одновременная игра на двух аккаунтах | ❌ | ✅ |
-| Перекачка игр | ❌ | ❌ (хостовый `steamapps` прокинут внутрь) |
-| Админ-права | Нет | Да (UAC, с предупреждением) |
-| EAC / BattlEye | ✅ | ⚠ Часть игр отказывается грузиться в песке |
-| Зависимости | Нет | Sandboxie-Plus (~12 МБ, silent install) |
+| Основной Steam | Завершается и запускается с выбранным аккаунтом | Продолжает работать |
+| Несколько клиентов одновременно | Нет | Да |
+| Уже установленные игры | Используются напрямую | Доступны через общую библиотеку Steam |
+| Права администратора | Не требуются | Требуются |
+| Дополнительная зависимость | Нет | Sandboxie-Plus |
 
-## Безопасность
+Совместимость игры с Sandbox зависит от её защиты и античита. Лаунчер не снимает ограничения Steam или самой игры.
 
-- `loginusers.vdf` бэкапится в `<workspace>/backups/` перед каждым свитчем.
-- Старое `HKCU\…\AutoLoginUser` сохраняется в `<workspace>/backups/registry-<ts>.json`.
-- В настройках — кнопка **Revert last switch**: откатывает обе вещи атомарно.
-- Switch/Sandbox используют сохранённую авторизацию Steam. Для Authenticator можно включить «Запомнить пароль»: после успешного входа он сохраняется отдельно от `.maFile`, зашифрованный Windows DPAPI для текущего пользователя. Пароль отправляется только Steam для входа и не включается в экспорт `.maFile`; его можно удалить кнопкой «Забыть сохранённый пароль».
-- При потере сессии Authenticator сначала обновляет токен, затем при необходимости использует сохранённый пароль и автоматически отправляет Steam Guard. Неверный пароль или дополнительная проверка Steam останавливают автовход до ручной авторизации. Заблокированное мастер-паролем хранилище необходимо сначала разблокировать.
-- `.maFile` можно зашифровать мастер-паролем (Argon2id с 64 МБ памяти + AES-256-GCM). Без пароля в процессе не раскрываются.
-- `shared_secret`, `identity_secret`, `refresh_token` никогда не логируются. `revocation_code` показывается один раз на этапе привязки — дальше он тоже только на диске (в шифрованном виде, если включён мастер-пароль).
+## Пароли, секреты и бэкапы
+
+- **Мастер-пароль** шифрует хранилище `.maFile` с помощью Argon2id и AES-256-GCM. Без включённого мастер-пароля файлы хранятся открыто. Закрытое хранилище нужно разблокировать перед работой с 2FA и подтверждениями.
+- **«Запомнить пароль»** доступно при входе в Authenticator. После успешного входа пароль сохраняется отдельно от `.maFile`, под защитой Windows DPAPI текущего пользователя. Он используется для входа в Steam, не включается в экспорт `.maFile` и удаляется кнопкой **«Забыть сохранённый пароль»**. Переноса workspace недостаточно для переноса такого пароля на другой компьютер или профиль Windows.
+- **Автовход** сначала пытается обновить токен. Сохранённый пароль и доступные секреты Steam Guard позволяют повторить вход автоматически; неверный пароль или дополнительная проверка Steam приостанавливают этот процесс.
+- **Удаление аутентификатора из лаунчера** удаляет его локальную копию. Для отключения Steam Guard на аккаунте используйте Steam. Сохраните код восстановления и резервную копию `.maFile` в надёжном месте.
+- **`<workspace>/backups/`** хранит `loginusers.vdf` и `AutoLoginUser` вместе в точке восстановления. Сохраняются до 10 последних точек; повтор текущего состояния не создаёт новую копию. Старые парные бэкапы преобразуются, лишние служебные файлы очищаются. Непарные и посторонние файлы сохраняются.
+- В **Настройках** доступны откат последнего переключения и **«Упорядочить backups»**.
 
 ## Сборка из исходников
 
-- Windows 10/11 x64
-- [Rust stable](https://rustup.rs/) + MSVC build tools (VS 2022 Build Tools, workload «Desktop development with C++»)
-- Node.js 20+
+Нужны Windows 10/11 x64, Node.js 20+, [Rust stable](https://rustup.rs/) и MSVC Build Tools с компонентом **Desktop development with C++**.
 
 ```powershell
-git clone https://github.com/Shightrox/steam-shadow-launcher
+git clone https://github.com/Shightrox/steam-shadow-launcher.git
 cd steam-shadow-launcher
-npm install
-npm run tauri build
+npm ci
+npm run tauri build -- --no-bundle
 ```
 
-Артефакты — в `src-tauri/target/release/bundle/`.
+Исполняемый файл: `src-tauri/target/release/steam-shadow-launcher.exe`.
 
-## FAQ
+Для установщиков выполните `npm run tauri build`; они появятся в `src-tauri/target/release/bundle/`. Режим разработки: `npm run tauri dev`.
 
-**Забанят?** Нет. Лаунчер трогает только то, что и сам Steam трогает сотни раз в день: `loginusers.vdf` и `AutoLoginUser`. SAM / TcNo / Steam Account Manager используют тот же подход больше десяти лет. Steam Guard привязывается через те же публичные API, что и мобильное приложение Steam.
+### Проверки
 
-**А мобильник для Guard не нужен будет?** Нет. Можно привязать Guard прямо из лаунчера — получишь `.maFile`, коды будут генериться в интерфейсе.
+```powershell
+npm test
+npm run build
+cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1
+```
 
-**Steam Guard уже стоит на телефоне.** Либо сначала отвязываешь его в Steam, потом привязываешь через лаунчер, либо импортируешь существующий `.maFile` из SDA / steamguard-cli — оба рабочих варианта.
+Для просмотра собранного интерфейса с искусственными ответами Tauri:
 
-**Linux / macOS?** Нет, только Windows. Используются junction reparse points, драйвер Sandboxie, Win32-мьютексы Steam.
+```powershell
+npm run build
+python tests/ui/serve.py
+```
 
-**Окно маленькое и не ресайзится.** Осознанно. Вся типографика рассчитана под 760×520.
+Откройте `http://127.0.0.1:18743/showcase.html`. Этот стенд используется для скриншотов, не обращается к локальным аккаунтам и не выполняет операции в Steam. Изображения предметов загружаются с публичного CDN Steam. [Как обновить снимки](docs/screenshots/README.md).
 
-## Благодарности
+История исправлений и проверок: [ревью и исправления](docs/review-2026-09-19/FIXES.md), [интерфейс v0.2.5](docs/review-2026-09-19/FLUENT-IMPLEMENTATION.md). Реальные сделки и совместимость всех игр с Sandboxie не входят в автоматические тесты.
 
-- [Sandboxie-Plus](https://sandboxie-plus.com/) — David Xanatos (GPLv3), вызывается внешним процессом, не линкуется в бинарник.
-- [Tauri 2](https://tauri.app), [Vite](https://vitejs.dev), [Zustand](https://github.com/pmndrs/zustand).
-- Шрифты VT323 и JetBrains Mono.
-- Протокол Steam Mobile Authenticator реверсили [SDA](https://github.com/Jessecar96/SteamDesktopAuthenticator) и [steamguard-cli](https://github.com/dyc3/steamguard-cli). Код из этих проектов не копировался (GPL-3.0); использованы только описания endpoint'ов.
+## Благодарности и лицензия
 
-## Лицензия
+- [Sandboxie-Plus](https://sandboxie-plus.com/) — внешний компонент для песочниц, GPLv3.
+- [Tauri 2](https://tauri.app), [React](https://react.dev), [Vite](https://vite.dev), [Zustand](https://github.com/pmndrs/zustand).
+- [Departure Mono](https://departuremono.com/) — пиксельный шрифт Helena Zhang, [SIL Open Font License](src/assets/DepartureMono-LICENSE.txt). Включён локально, без загрузки из Google Fonts.
+- [Steam Desktop Authenticator](https://github.com/Jessecar96/SteamDesktopAuthenticator) и [steamguard-cli](https://github.com/dyc3/steamguard-cli) — материалы о протоколе Steam Mobile Authenticator.
 
-[MIT](LICENSE).
+Лицензия лаунчера — [MIT](LICENSE). Независимый проект, не связанный с Valve.
 
 ---
 
-## 🇬🇧 English
+## English
 
-Steam account switcher and parallel launcher via Sandboxie-Plus. With a built-in Steam Guard — no mobile phone required.
+Steam Shadow Launcher combines Steam account switching, parallel clients via Sandboxie-Plus and a desktop Steam Guard authenticator. Compact account tiles keep avatars, 2FA codes and launch history together. The dark interface uses green accents, a bundled pixel font, translucent panels and adjustable background particles.
 
-### What it does
+### Current version and screenshots
 
-- **Sandbox mode** — run multiple Steam clients in parallel. Sandboxie installs itself on first click.
-- **Switch mode** — fast account switching via the main Steam process, no sandbox required.
-- **Login without passwords** — reuses saved sessions from the machine.
-- **One-click game launch** from any account, with library covers from local Steam cache.
-- **Per-account desktop shortcuts** — `.lnk` boots the launcher in headless mode and starts the chosen profile.
-- **Backups & rollback** — `loginusers.vdf` and registry snapshots are saved before every switch, with a one-click «Revert last switch».
-- **Readable dark UI** — cards or compact rows, account search, Steam Guard access panel, resizable from 760×520, EN/RU.
-- **Item previews in confirmations** — market thumbnails and expandable trade contents with both sides, quantities and partner SteamID.
-- **Portable build** — single `.exe`, no installer required.
+The source in `main` and the screenshots above show **v0.2.5**. The latest published binary is **v0.2.3**; build from source to use the updated interface. All screenshot accounts, codes and operations are synthetic.
 
-### New in v0.2.0 — built-in Steam Desktop Authenticator
+- [Accounts and inline 2FA](docs/screenshots/accounts-v025.jpg)
+- [Market confirmations and both sides of a trade](docs/screenshots/confirmations-v025.jpg)
+- [Appearance settings](docs/screenshots/settings-v025.jpg)
 
-- **Steam Guard TOTP codes** generated inline on each account card.
-- **Import `.maFile`** from SDA / steamguard-cli, plain or encrypted.
-- **Enroll a fresh authenticator** via a 13-phase wizard: login → diagnose → phone (or email-Guard, no phone) → activation → revocation code → save. Your mobile phone is not required.
-- **Auto-confirm** outgoing trades & market listings in the background.
-- **Master password** — all `.maFile`s encrypt with Argon2id + AES-256-GCM at rest.
-- **Revoke authenticator** from inside the app using your revocation code.
+### Features
 
-### Install
+- **Switch / Sandbox:** switch the main Steam client or run additional clients through Sandboxie-Plus. Reuse installed games, launch a game directly and create account shortcuts.
+- **Compact account tiles:** avatars, 2FA code and timer, copy action, last launch, launch count, favorites, session state and sandbox controls. Search and list view are available.
+- **Steam Guard:** `.maFile` import/export, locally generated codes, enrollment wizard and recovery of unfinished enrollment.
+- **Confirmations:** a shared queue with account filtering, item images, expandable give/receive lists and bulk approval or rejection.
+- **Session recovery:** refresh the token first, then use an optionally saved password and Steam Guard to sign in again. Additional Steam challenges require manual input.
+- **Background polling:** adjustable interval and separate auto-confirm options for outgoing trades and market listings. Auto-confirm is off by default.
+- **Appearance:** adjustable glass density, particle brightness and motion; resizable window; Russian and English UI.
+- **Backups:** paired Steam restore points, rollback and cleanup of legacy backup files.
 
-Grab the portable exe from [Releases](../../releases):
+### Install and start
 
-| File | Notes |
-|---|---|
-| `SteamShadowLauncher-v0.2.0-x64-portable.exe` | Single exe. Settings live in `%APPDATA%\SteamShadowLauncher\`. |
-| `SHA256SUMS.txt` | Checksums. |
+Download `SteamShadowLauncher-v<version>-x64-portable.exe` from [Releases](https://github.com/Shightrox/steam-shadow-launcher/releases). Checksums are provided in `SHA256SUMS.txt`.
 
-UAC is only requested when actually needed (Sandbox mode). Switch mode works without admin.
+Choose a workspace, then import accounts saved in the local Steam client or add an account manually. Steam may ask you to sign in again if its saved authorization has expired. Select **Switch** to restart the main client under another account, or **Sandbox** to launch an additional client. Sandbox requires administrator privileges and a separate Sandboxie-Plus installation, available through the app. Some games and anti-cheat systems do not support sandboxed execution.
 
-### SWITCH vs SANDBOX
+Import a `.maFile` or use the **Steam Guard** enrollment wizard for 2FA. Steam may require email or phone verification during enrollment.
 
-|  | SWITCH | SANDBOX |
-|---|---|---|
-| Closes current Steam | Yes | No |
-| Simultaneous play | ❌ | ✅ |
-| Re-download games | ❌ | ❌ (host `steamapps` mounted) |
-| Admin required | No | Yes |
-| EAC / BattlEye | ✅ | ⚠ Some titles refuse to load inside a sandbox |
-| External deps | None | Sandboxie-Plus (~12 MB, silent install) |
+The portable launcher stores settings in `%APPDATA%\SteamShadowLauncher\` and account data in your chosen workspace.
 
-### Safety
+### Data and recovery
 
-- `loginusers.vdf` + registry snapshot backed up before every switch.
-- Settings → **Revert last switch** restores both atomically.
-- Switch/Sandbox reuse Steam's saved login. Authenticator optionally remembers a password after successful login, protected with Windows DPAPI for the current user in a separate file. It is sent only to Steam for authentication, excluded from `.maFile` exports, and can be removed with **Forget saved password**.
-- Authenticator refreshes tokens first, then uses a saved password and generates Steam Guard automatically if a new login is required. Rejected credentials or additional Steam checks pause automatic login until manual sign-in. A vault protected by a master password must be unlocked first.
-- `.maFile`s can be sealed under a master password (Argon2id 64 MiB + AES-256-GCM).
-- `shared_secret` / `identity_secret` / `refresh_token` never appear in logs. `revocation_code` is shown once during enrollment.
+The optional master password encrypts `.maFile` storage with Argon2id and AES-256-GCM. Without it, these files remain unencrypted. Unlock the vault before generating codes, recovering sessions or handling confirmations.
 
-### Build from source
+An optionally remembered Steam password is saved only after successful authentication, separately from `.maFile`, protected by Windows DPAPI for the current user. It is excluded from `.maFile` exports and can be removed with **Forget saved password**. Moving the workspace alone does not transfer that password to another Windows profile or computer.
+
+Removing an authenticator from the launcher removes its local copy; disabling Steam Guard on the account must be done in Steam. Keep your recovery code and a backup of the `.maFile` safe.
+
+`<workspace>/backups/` retains up to 10 restore points, each containing `loginusers.vdf` and `AutoLoginUser`. Repeated identical states are skipped. Legacy pairs are migrated; unpaired and unrelated files are preserved. Rollback and cleanup are available in Settings.
+
+### Build and verify
+
+Requirements: Windows 10/11 x64, Node.js 20+, Rust stable and MSVC Build Tools with **Desktop development with C++**.
 
 ```powershell
-git clone https://github.com/Shightrox/steam-shadow-launcher
+git clone https://github.com/Shightrox/steam-shadow-launcher.git
 cd steam-shadow-launcher
-npm install
-npm run tauri build
+npm ci
+npm run tauri build -- --no-bundle
 ```
 
-### FAQ
+Binary: `src-tauri/target/release/steam-shadow-launcher.exe`. Use `npm run tauri build` for installers in `src-tauri/target/release/bundle/`, or `npm run tauri dev` for development.
 
-**Will Steam ban me?** No. The launcher only edits files Steam itself edits. Steam Guard uses the same public APIs as the official mobile app.
+Run `npm test`, `npm run build` and `cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1` for automated checks. Live trades and compatibility with every sandboxed game are not covered by these tests.
 
-**Do I need a phone for Steam Guard?** No — enroll a fresh authenticator from inside the launcher, or import an existing `.maFile`.
+For the synthetic screenshot fixture, run `npm run build`, then `python tests/ui/serve.py`, and open `http://127.0.0.1:18743/showcase.html`. It does not access local Steam accounts or perform Steam operations; item images load from Steam's public CDN.
 
-**Linux / macOS?** Windows-only.
+### Credits and license
 
-### Credits
+Built with Tauri, React, Vite and Zustand; Sandboxie-Plus provides the external sandbox component. Departure Mono by Helena Zhang is bundled under the [SIL Open Font License](src/assets/DepartureMono-LICENSE.txt). SDA and steamguard-cli provide reference material on the authenticator protocol.
 
-- [Sandboxie-Plus](https://sandboxie-plus.com/) by David Xanatos (GPLv3).
-- [Tauri 2](https://tauri.app), [Vite](https://vitejs.dev), [Zustand](https://github.com/pmndrs/zustand).
-- Steam Mobile Authenticator protocol reverse-engineered by [SDA](https://github.com/Jessecar96/SteamDesktopAuthenticator) and [steamguard-cli](https://github.com/dyc3/steamguard-cli). No code copied (both are GPL-3.0) — only endpoint descriptions.
-
-### License
-
-[MIT](LICENSE).
+[MIT](LICENSE). An independent project, not affiliated with Valve.
