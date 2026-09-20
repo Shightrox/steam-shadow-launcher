@@ -43,7 +43,7 @@ Steam account switcher, parallel launcher and desktop authenticator for Windows.
 
 Готовые сборки находятся в [Releases](https://github.com/Shightrox/steam-shadow-launcher/releases). Скачайте `SteamShadowLauncher-v<version>-x64-portable.exe`; контрольные суммы публикуются в `SHA256SUMS.txt`.
 
-**Исходники и скриншоты в `main` — v0.2.5. Последняя опубликованная сборка — v0.2.3; для нового интерфейса пока нужна сборка из исходников.**
+**Актуальная версия — [v0.2.5](https://github.com/Shightrox/steam-shadow-launcher/releases/tag/v0.2.5). [Скачать portable для Windows x64](https://github.com/Shightrox/steam-shadow-launcher/releases/download/v0.2.5/SteamShadowLauncher-v0.2.5-x64-portable.exe).** Скриншоты выше показывают эту сборку.
 
 1. Запустите приложение и выберите папку данных (workspace).
 2. Импортируйте аккаунты, сохранённые в локальном Steam, или добавьте аккаунт вручную. Если Steam больше не принимает сохранённую сессию, потребуется повторный вход.
@@ -124,7 +124,7 @@ Steam Shadow Launcher combines Steam account switching, parallel clients via San
 
 ### Current version and screenshots
 
-The source in `main` and the screenshots above show **v0.2.5**. The latest published binary is **v0.2.3**; build from source to use the updated interface. All screenshot accounts, codes and operations are synthetic.
+The current release is **[v0.2.5](https://github.com/Shightrox/steam-shadow-launcher/releases/tag/v0.2.5)**. **[Download the Windows x64 portable build](https://github.com/Shightrox/steam-shadow-launcher/releases/download/v0.2.5/SteamShadowLauncher-v0.2.5-x64-portable.exe).** The screenshots above show this version; all accounts, codes and operations in them are synthetic.
 
 - [Accounts and inline 2FA](docs/screenshots/accounts-v025.jpg)
 - [Market confirmations and both sides of a trade](docs/screenshots/confirmations-v025.jpg)
