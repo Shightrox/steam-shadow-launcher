@@ -5,10 +5,11 @@ import { WorkspaceChangeDialog } from "../components/WorkspaceChangeDialog";
 import { SandboxieInstallModal } from "../components/SandboxieInstallModal";
 import { AuthSecuritySection } from "../components/AuthSecuritySection";
 import { AuthPollerSection } from "../components/AuthPollerSection";
+import { AppearanceSettings } from "../components/AppearanceSettings";
 import { useI18n } from "../i18n";
 
 export function SettingsView({ onClose }: { onClose(): void }) {
-  const { settings, mainSteam, sandboxie, sbStatus, log } = useApp();
+  const { settings, mainSteam, sandboxie, sbStatus, log, toast } = useApp();
   const { t } = useI18n();
   const [pendingNew, setPendingNew] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -28,26 +29,31 @@ export function SettingsView({ onClose }: { onClose(): void }) {
     setBusy(true);
     try {
       await api.changeWorkspace(target, strategy);
-      await api.cleanupStaleJunctions();
       await useApp.getState().bootstrap();
       log("info", `Workspace (${strategy}): ${target}`);
     } catch (e: any) {
-      alert(String(e));
+      toast("error", String(e));
     } finally {
       setBusy(false);
     }
   };
 
-  const overrideSteam = async () => {
-    const dir = await pickFolder(t("settings.overrideBtn"));
-    if (!dir) return;
-    await api.setMainSteamOverride(dir);
-    await useApp.getState().bootstrap();
+  const setSteamOverride = async (path: string | null) => {
+    setBusy(true);
+    try { await api.setMainSteamOverride(path); await useApp.getState().bootstrap(); }
+    catch (e) { toast("error", String(e)); }
+    finally { setBusy(false); }
   };
-
-  const resetOverride = async () => {
-    await api.setMainSteamOverride(null);
-    await useApp.getState().bootstrap();
+  const overrideSteam = async () => {
+    try { const dir = await pickFolder(t("settings.overrideBtn")); if (dir) await setSteamOverride(dir); }
+    catch (e) { toast("error", String(e)); }
+  };
+  const resetOverride = () => setSteamOverride(null);
+  const cleanupBackups = async () => {
+    setBusy(true);
+    try { const result = await api.cleanupBackups(); toast("success", t("settings.backupsCleaned", { count: result.retained })); }
+    catch (e) { toast("error", String(e)); }
+    finally { setBusy(false); }
   };
 
   const cleanup = async () => {
@@ -57,7 +63,7 @@ export function SettingsView({ onClose }: { onClose(): void }) {
       log("info", `Cleanup: rep=${r.repaired.length} err=${r.errors.length}`);
       await useApp.getState().refreshAccounts();
     } catch (e: any) {
-      alert(String(e));
+      toast("error", String(e));
     } finally {
       setBusy(false);
     }
@@ -70,7 +76,7 @@ export function SettingsView({ onClose }: { onClose(): void }) {
       log("info", "Reverted last switch");
       await useApp.getState().bootstrap();
     } catch (e: any) {
-      alert(String(e));
+      toast("error", String(e));
     } finally {
       setBusy(false);
     }
@@ -88,6 +94,7 @@ export function SettingsView({ onClose }: { onClose(): void }) {
         <button className="xs" onClick={onClose}>{t("common.back")}</button>
       </div>
 
+      <AppearanceSettings />
       <div className="card compact">
         <div className="title">{t("settings.workspace")}</div>
         <code className="path">{settings?.workspace || "(?)"}</code>
@@ -103,8 +110,8 @@ export function SettingsView({ onClose }: { onClose(): void }) {
         <div className="sub">{t("settings.override")} {settings?.mainSteamPathOverride || t("common.none")}</div>
         <div className="sub">{t("settings.detected")} {mainSteam?.installDir || "?"}</div>
         <div className="actions">
-          <button className="xs" onClick={overrideSteam}>{t("settings.overrideBtn")}</button>
-          <button className="xs ghost" onClick={resetOverride}>{t("settings.reset")}</button>
+          <button className="xs" onClick={overrideSteam} disabled={busy}>{t("settings.overrideBtn")}</button>
+          <button className="xs ghost" onClick={resetOverride} disabled={busy}>{t("settings.reset")}</button>
         </div>
       </div>
 
@@ -145,6 +152,7 @@ export function SettingsView({ onClose }: { onClose(): void }) {
         </div>
       </div>
 
+      <div className="card compact"><div className="title">{t("settings.backups")}</div><div className="sub">{t("settings.backupsHint")}</div><div className="actions"><button className="xs" disabled={busy} onClick={cleanupBackups}>{t("settings.backupsClean")}</button></div></div>
       <AuthSecuritySection />
       <AuthPollerSection />
 

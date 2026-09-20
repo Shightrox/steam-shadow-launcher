@@ -6,7 +6,7 @@ import { useI18n } from "../i18n";
 /// Settings panel section: background confirmation poller + auto-confirm flags.
 export function AuthPollerSection() {
   const { t } = useI18n();
-  const { settings, log } = useApp();
+  const { settings, log, toast } = useApp();
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<Settings | null>(settings);
 
@@ -21,15 +21,16 @@ export function AuthPollerSection() {
     setLocal(next);
     setBusy(true);
     try {
-      await api.saveSettings(next);
-      useApp.setState({ settings: next });
       await api.authPollerConfigure({
         enabled: next.authPollerEnabled,
         interval: next.authPollerInterval,
         autoConfirmTrades: next.authAutoConfirmTrades,
         autoConfirmMarket: next.authAutoConfirmMarket,
       });
+      useApp.setState(s => ({ settings: s.settings ? { ...s.settings, authPollerEnabled: next.authPollerEnabled, authPollerInterval: next.authPollerInterval, authAutoConfirmTrades: next.authAutoConfirmTrades, authAutoConfirmMarket: next.authAutoConfirmMarket } : null }));
     } catch (e: any) {
+      setLocal(useApp.getState().settings);
+      toast("error", String(e));
       log("error", `poller configure: ${e}`);
     } finally {
       setBusy(false);
@@ -37,11 +38,14 @@ export function AuthPollerSection() {
   };
 
   const pokeNow = async () => {
+    setBusy(true);
     try {
       await api.authPollerPoke();
+      toast("info", t("auth.poller.checked"));
     } catch (e: any) {
+      toast("error", String(e));
       log("warn", `poller poke: ${e}`);
-    }
+    } finally { setBusy(false); }
   };
 
   const showWarning = local.authAutoConfirmTrades || local.authAutoConfirmMarket;
@@ -83,7 +87,7 @@ export function AuthPollerSection() {
           style={{ width: 80 }}
         />
         <button className="xs ghost" onClick={pokeNow} disabled={busy}>
-          {t("auth.poller.pokeNow")}
+          {t(busy ? "common.booting" : "auth.poller.pokeNow")}
         </button>
       </div>
 

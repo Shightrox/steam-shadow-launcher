@@ -17,7 +17,7 @@ export function AddAccountModal({ open, onClose, onSubmit }: Props) {
   if (!open) return null;
 
   const submit = async () => {
-    if (!/^[a-zA-Z0-9_.\-]{1,64}$/.test(login)) {
+    if (!/^[a-zA-Z0-9_.\-]{1,64}$/.test(login) || login.endsWith(".") || /^(con|prn|aux|nul|clock\$|com[1-9]|lpt[1-9])(?:\.|$)/i.test(login)) {
       setErr(t("add.invalidLogin"));
       return;
     }
@@ -36,7 +36,7 @@ export function AddAccountModal({ open, onClose, onSubmit }: Props) {
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={() => !busy && onClose()}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>{t("add.title")}</h2>
         <div className="row">

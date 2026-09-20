@@ -149,6 +149,9 @@ pub struct MaFile {
     pub confirm_type: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fully_enrolled: Option<bool>,
+    /// Local enrollment progress; remains true until the recovery code is acknowledged.
+    #[serde(default)]
+    pub recovery_pending: bool,
 
     /// Cookies and access/refresh tokens. May be missing if user dragged in
     /// a maFile that was generated without ever logging in (rare).
@@ -179,8 +182,8 @@ impl MaFile {
 
     /// Parse from raw JSON bytes.
     pub fn from_json_bytes(bytes: &[u8]) -> AppResult<Self> {
-        let s = std::str::from_utf8(bytes)
-            .map_err(|_| AppError::Other("MAFILE_NOT_UTF8".into()))?;
+        let s =
+            std::str::from_utf8(bytes).map_err(|_| AppError::Other("MAFILE_NOT_UTF8".into()))?;
         Self::from_json_str(s)
     }
 

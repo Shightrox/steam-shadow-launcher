@@ -2,6 +2,7 @@ use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+static WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -107,10 +108,16 @@ pub fn config_dir() -> AppResult<PathBuf> {
                 }
             }
         }
-        // Best-effort cleanup; ignore failures.
-        let _ = fs::remove_dir_all(&legacy);
+        // Never recursively delete legacy data when a migration entry failed.
+        // Empty directories can be removed; remaining files stay recoverable.
+        let _ = fs::remove_dir(&legacy_cfg);
+        let _ = fs::remove_dir(&legacy);
         let parent = base.join("kilocode");
-        if parent.read_dir().map(|mut r| r.next().is_none()).unwrap_or(false) {
+        if parent
+            .read_dir()
+            .map(|mut r| r.next().is_none())
+            .unwrap_or(false)
+        {
             let _ = fs::remove_dir(parent);
         }
     }
@@ -139,8 +146,67 @@ pub fn load() -> AppResult<Settings> {
 }
 
 pub fn save(s: &Settings) -> AppResult<()> {
+    let _guard = WRITE.lock().unwrap();
+    save_inner(s)
+}
+
+fn save_inner(s: &Settings) -> AppResult<()> {
     let path = settings_path()?;
     let txt = serde_json::to_string_pretty(s)?;
-    fs::write(&path, txt)?;
+    if let Ok(previous) = fs::read(&path) {
+        if serde_json::from_slice::<Settings>(&previous).is_ok() {
+            crate::storage::atomic_write(&path.with_extension("json.backup"), &previous)?;
+        }
+    }
+    crate::storage::atomic_write(&path, txt.as_bytes())?;
     Ok(())
+}
+
+pub fn update(f: impl FnOnce(&mut Settings)) -> AppResult<()> {
+    let _guard = WRITE.lock().unwrap();
+    let mut current = load()?;
+    f(&mut current);
+    save_inner(&current)
+}
+
+pub fn recover_settings() -> AppResult<Settings> {
+    let _guard = WRITE.lock().unwrap();
+    let path = settings_path()?;
+    recover_at(&path)
+}
+
+fn recover_at(path: &std::path::Path) -> AppResult<Settings> {
+    let recovered = fs::read(path.with_extension("json.backup"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Settings>(&b).ok())
+        .unwrap_or_default();
+    if path.exists() {
+        fs::copy(
+            &path,
+            path.with_extension(format!("json.corrupt-{:016x}", rand::random::<u64>())),
+        )?;
+    }
+    crate::storage::atomic_write(&path, &serde_json::to_vec_pretty(&recovered)?)?;
+    Ok(recovered)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn recovery_restores_backup_and_preserves_damaged_settings() {
+        let root = std::env::temp_dir().join(format!("shadow-settings-{}", rand::random::<u64>()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("settings.json");
+        let mut original = Settings::default();
+        original.workspace = Some(root.join("accounts-workspace")); original.language = "en".into();
+        fs::write(path.with_extension("json.backup"), serde_json::to_vec(&original).unwrap()).unwrap();
+        fs::write(&path, b"damaged-json").unwrap();
+        let recovered = recover_at(&path).unwrap();
+        assert_eq!(recovered.workspace, original.workspace); assert_eq!(recovered.language, "en");
+        let copies: Vec<_> = fs::read_dir(&root).unwrap().map(Result::unwrap).filter(|e| e.file_name().to_string_lossy().contains(".corrupt-")).collect();
+        assert_eq!(copies.len(), 1); assert_eq!(fs::read(copies[0].path()).unwrap(), b"damaged-json");
+        assert!(fs::canonicalize(&root).unwrap().starts_with(fs::canonicalize(std::env::temp_dir()).unwrap()));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

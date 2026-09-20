@@ -1,4 +1,6 @@
+import { setCurrentWorkspace } from "./workspaceContext";
 import { create } from "zustand";
+import { useI18n } from "../i18n";
 import {
   api,
   type Account,
@@ -31,6 +33,8 @@ export type SbStatus = "unknown" | "ready" | "missing" | "installing" | "failed"
 
 interface AppState {
   settings: Settings | null;
+  bootError: string | null;
+  workspaceEpoch: number;
   mainSteam: MainSteamInfo | null;
   mainSteamError: string | null;
   accounts: Account[];
@@ -46,6 +50,7 @@ interface AppState {
   codes: Record<string, GuardCode>;
   confirmations: Record<string, Confirmation[]>;
   confLoading: Record<string, boolean>;
+  confErrors: Record<string, string | null>;
   authLock: AuthLockStatus | null;
   /// True while the AddAuthenticator wizard is mounted. Used by TitleBar to
   /// prompt-to-confirm before closing the window mid-flow — at certain phases
@@ -78,9 +83,10 @@ interface AppState {
   importMafile(login: string, source: string, encryptionPassword?: string): Promise<void>;
   exportMafile(login: string, target: string): Promise<void>;
   removeAuthenticator(login: string): Promise<void>;
-  refreshCode(login: string): Promise<void>;
+  refreshCode(login: string): Promise<GuardCode | undefined>;
   refreshConfirmations(login: string): Promise<void>;
   mergeConfirmations(login: string, items: Confirmation[]): void;
+  setConfirmationError(login: string, message: string): void;
   respondConfirmations(login: string, ids: string[], op: ConfirmOp): Promise<boolean>;
   refreshAuthLock(): Promise<void>;
   unlockAuth(password: string): Promise<boolean>;
@@ -89,8 +95,13 @@ interface AppState {
   setAddAuthActive(v: boolean): void;
 }
 
+const codeRequests = new Map<string, Promise<GuardCode | undefined>>();
+const codeRetryAt = new Map<string, number>();
+
 export const useApp = create<AppState>((set, get) => ({
   settings: null,
+  bootError: null,
+  workspaceEpoch: 0,
   mainSteam: null,
   mainSteamError: null,
   accounts: [],
@@ -106,6 +117,7 @@ export const useApp = create<AppState>((set, get) => ({
   codes: {},
   confirmations: {},
   confLoading: {},
+  confErrors: {},
   authLock: null,
   addAuthActive: false,
 
@@ -138,16 +150,26 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async bootstrap() {
+    const epoch = get().workspaceEpoch + 1;
+    set({ workspaceEpoch: epoch, bootError: null, settings: null, accounts: [], healths: {},
+      codes: {}, confirmations: {}, confErrors: {}, confLoading: {}, sessionStates: {}, authStatus: {}, authLock: null });
+    setCurrentWorkspace(null);
+    codeRequests.clear(); codeRetryAt.clear();
     try {
       const settings = await api.getSettings();
+      if (epoch !== get().workspaceEpoch) return;
+      setCurrentWorkspace(settings.workspace);
       set({ settings });
       try {
         const mainSteam = await api.detectMainSteam();
+        if (epoch !== get().workspaceEpoch) return;
         set({ mainSteam, mainSteamError: null });
       } catch (e: any) {
+        if (epoch !== get().workspaceEpoch) return;
         set({ mainSteam: null, mainSteamError: String(e) });
       }
       await get().refreshSandboxie();
+      if (epoch !== get().workspaceEpoch) return;
       if (settings.firstRunCompleted && settings.workspace) {
         try {
           const report = await api.cleanupStaleJunctions();
@@ -160,31 +182,26 @@ export const useApp = create<AppState>((set, get) => ({
         } catch (e: any) {
           get().log("warn", `cleanup_stale_junctions: ${e}`);
         }
+        if (epoch !== get().workspaceEpoch) return;
         await get().refreshAccounts();
       }
+      if (epoch !== get().workspaceEpoch) return;
       // Authenticator status is cheap and useful even before any maFile is
       // imported (drives the per-card widget visibility).
       await get().refreshAuthStatus();
       await get().refreshAuthLock();
-      // Push current poller config to the running thread (idempotent).
-      try {
-        await api.authPollerConfigure({
-          enabled: settings.authPollerEnabled,
-          interval: settings.authPollerInterval,
-          autoConfirmTrades: settings.authAutoConfirmTrades,
-          autoConfirmMarket: settings.authAutoConfirmMarket,
-        });
-      } catch (e: any) {
-        get().log("warn", `authPollerConfigure: ${e}`);
-      }
     } catch (e: any) {
+      if (epoch !== get().workspaceEpoch) return;
+      set({ bootError: String(e) });
       get().log("error", String(e));
     }
   },
 
   async refreshAccounts() {
+    const epoch = get().workspaceEpoch;
     try {
       const accounts = await api.listAccounts();
+      if (epoch !== get().workspaceEpoch) return;
       set({ accounts });
       await Promise.all(accounts.map((a) => get().refreshHealth(a.login)));
     } catch (e: any) {
@@ -193,8 +210,10 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async refreshHealth(login: string) {
+    const epoch = get().workspaceEpoch;
     try {
       const h = await api.verifyAccount(login);
+      if (epoch !== get().workspaceEpoch) return;
       set((s) => ({ healths: { ...s.healths, [login]: h } }));
     } catch (e: any) {
       get().log("warn", `verifyAccount ${login}: ${e}`);
@@ -296,10 +315,12 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async refreshAuthStatus() {
+    const epoch = get().workspaceEpoch;
     try {
       const list = await api.authStatus();
+      if (epoch !== get().workspaceEpoch) return;
       const map: Record<string, AccountAuthStatus> = {};
-      const states: Record<string, SessionState> = { ...get().sessionStates };
+      const states: Record<string, SessionState> = {};
       for (const it of list) {
         map[it.login] = it;
         states[it.login] = it.sessionState;
@@ -311,8 +332,10 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async refreshSessionState(login: string) {
+    const epoch = get().workspaceEpoch;
     try {
       const st = await api.authSessionState(login);
+      if (epoch !== get().workspaceEpoch) return;
       set((s) => ({ sessionStates: { ...s.sessionStates, [login]: st } }));
     } catch (e: any) {
       console.warn(`refreshSessionState(${login}):`, e);
@@ -324,19 +347,24 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async refreshAccessToken(login: string) {
+    const epoch = get().workspaceEpoch;
     try {
       await api.authLoginRefresh(login);
-      await get().refreshSessionState(login);
+      if (epoch !== get().workspaceEpoch) return false;
+      await get().refreshAuthStatus();
       return true;
     } catch (e: any) {
+      if (epoch !== get().workspaceEpoch) return false;
       get().toast("error", String(e));
-      await get().refreshSessionState(login);
+      await get().refreshAuthStatus();
       return false;
     }
   },
 
   async importMafile(login: string, source: string, encryptionPassword?: string) {
+    const epoch = get().workspaceEpoch;
     await api.authImportMafile(login, source, encryptionPassword);
+      if (epoch !== get().workspaceEpoch) return ;
     get().log("info", `Authenticator imported: ${login}`);
     await get().refreshAccounts();
     await get().refreshAuthStatus();
@@ -349,7 +377,9 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async removeAuthenticator(login: string) {
+    const epoch = get().workspaceEpoch;
     await api.authRemove(login);
+      if (epoch !== get().workspaceEpoch) return ;
     get().log("info", `Authenticator removed: ${login}`);
     set((s) => {
       const codes = { ...s.codes };
@@ -362,69 +392,93 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async refreshCode(login: string) {
-    try {
-      const code = await api.authGenerateCode(login);
-      set((s) => ({ codes: { ...s.codes, [login]: code } }));
-    } catch (e: any) {
-      // Quiet failure: a missing maFile or revoked secret shouldn't spam logs.
-      console.warn(`refreshCode(${login}):`, e);
-    }
+    const epoch = get().workspaceEpoch;
+    if (get().authLock?.enabled && !get().authLock?.unlocked) return;
+    const key = `${epoch}:${login}`;
+    const running = codeRequests.get(key);
+    if (running) return running;
+    if ((codeRetryAt.get(key) ?? 0) > Date.now()) return;
+    const job = (async () => {
+      try {
+        const code = await api.authGenerateCode(login);
+        if (epoch !== get().workspaceEpoch || (get().authLock?.enabled && !get().authLock?.unlocked)) return;
+        set((s) => ({ codes: { ...s.codes, [login]: code } }));
+        return code;
+      } catch {
+        codeRetryAt.set(key, Date.now() + 5000);
+        if (epoch === get().workspaceEpoch) set((s) => { const codes = { ...s.codes }; delete codes[login]; return { codes }; });
+      } finally { codeRequests.delete(key); }
+    })();
+    codeRequests.set(key, job);
+    return job;
   },
 
   async refreshConfirmations(login: string) {
+    const epoch = get().workspaceEpoch;
+    if (get().confLoading[login]) return;
     set((s) => ({ confLoading: { ...s.confLoading, [login]: true } }));
     try {
       const list = await api.authConfirmationsList(login);
-      set((s) => ({ confirmations: { ...s.confirmations, [login]: list } }));
+      if (epoch !== get().workspaceEpoch) return ;
+      get().mergeConfirmations(login, list);
+      get().setSessionState(login, "ok");
     } catch (e: any) {
+      if (epoch !== get().workspaceEpoch) return ;
       const msg = String(e);
-      // "needs relogin" / "no session" are expected states surfaced by the
-      // session-state badge, not generic errors — don't spam toasts for them.
-      if (msg.includes("CONF_NEEDS_RELOGIN")) {
-        get().setSessionState(login, "needs_relogin");
-      } else if (
-        msg.includes("CONF_NO_SESSION") ||
-        msg.includes("CONF_NO_ACCESS_TOKEN") ||
-        msg.includes("CONF_NO_SESSION_ID") ||
-        msg.includes("CONF_NO_STEAM_ID")
-      ) {
-        get().setSessionState(login, "no_session");
-      } else {
-        get().toast("error", `Confirmations: ${msg}`);
-      }
-      set((s) => ({ confirmations: { ...s.confirmations, [login]: [] } }));
+      get().setConfirmationError(login, msg);
     } finally {
-      set((s) => ({ confLoading: { ...s.confLoading, [login]: false } }));
+      if (epoch === get().workspaceEpoch) set((s) => ({ confLoading: { ...s.confLoading, [login]: false } }));
     }
   },
 
   mergeConfirmations(login: string, items: Confirmation[]) {
-    set((s) => ({ confirmations: { ...s.confirmations, [login]: items } }));
+    if (get().authLock?.enabled && !get().authLock?.unlocked) return;
+    set((s) => ({
+      confirmations: { ...s.confirmations, [login]: items },
+      confErrors: { ...s.confErrors, [login]: null },
+    }));
+  },
+
+  setConfirmationError(login: string, message: string) {
+    set((s) => ({ confErrors: { ...s.confErrors, [login]: message } }));
+    if (message.includes("CONF_NEEDS_RELOGIN") || /AUTH_(AUTO_LOGIN|PASSWORD_UNAVAILABLE|LOGIN_REJECTED|GUARD_REJECTED|ACCOUNT_MISMATCH)/.test(message)) {
+      get().setSessionState(login, "needs_relogin");
+      void get().refreshAuthStatus();
+    } else if (/CONF_NO_(SESSION|ACCESS_TOKEN|STEAM_ID)/.test(message)) {
+      get().setSessionState(login, "no_session");
+    }
   },
 
   async respondConfirmations(login: string, ids: string[], op: ConfirmOp) {
+    const epoch = get().workspaceEpoch;
     try {
       const results = await api.authConfirmationsRespond(login, ids, op);
+      if (epoch !== get().workspaceEpoch) return false;
       const bad = results.filter((r) => !r.success);
       if (bad.length === 0) {
-        get().toast("success", `${op === "allow" ? "Allowed" : "Rejected"}: ${ids.length}`);
+        get().toast("success", useI18n.getState().t(op === "allow" ? "design.allowed" : "design.rejected", { count: ids.length }));
       } else {
         get().toast(
           "error",
-          `Partial failure: ${bad.length}/${results.length} (${bad[0]?.message ?? ""})`,
+          useI18n.getState().t("design.partialFailure", { count: bad.length, total: results.length, message: bad[0]?.message ?? "" }),
         );
       }
       await get().refreshConfirmations(login);
+      if (bad.length) get().setConfirmationError(login, bad[0].message || "Steam rejected the confirmation request");
       return bad.length === 0;
     } catch (e: any) {
+      if (epoch !== get().workspaceEpoch) return false;
+      get().setConfirmationError(login, String(e));
       get().toast("error", String(e));
       return false;
     }
   },
 
   async refreshAuthLock() {
+    const epoch = get().workspaceEpoch;
     try {
       const lock = await api.authLockStatus();
+      if (epoch !== get().workspaceEpoch) return;
       set({ authLock: lock });
     } catch (e: any) {
       get().log("warn", `authLockStatus: ${e}`);
@@ -448,9 +502,11 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async lockAuth() {
+    set(s => ({ workspaceEpoch: s.workspaceEpoch + 1, codes: {}, confirmations: {}, confErrors: {}, confLoading: {}, authLock: s.authLock ? { ...s.authLock, unlocked: false } : null }));
+    codeRequests.clear(); codeRetryAt.clear();
     try {
       await api.authLock();
-      set({ codes: {} });
+      set({ codes: {}, confirmations: {}, confErrors: {} });
       await get().refreshAuthLock();
     } catch (e: any) {
       get().toast("error", String(e));

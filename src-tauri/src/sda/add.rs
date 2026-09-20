@@ -77,6 +77,7 @@ pub struct AddSession {
     ///   1 = None, 2 = EmailCode, 3 = DeviceCode,
     ///   4 = DeviceConfirmation, 5 = EmailConfirmation, 6 = MachineToken.
     pub login_confirmations: Vec<i64>,
+    pub finalized: bool,
 }
 
 fn registry() -> &'static Mutex<HashMap<String, AddSession>> {
@@ -102,12 +103,17 @@ pub fn put_session(
         add: None,
         device_id: new_device_id(),
         login_confirmations,
+        finalized: false,
     };
     registry().lock().unwrap().insert(login.to_string(), sess);
 }
 
 pub fn drop_session(login: &str) {
     registry().lock().unwrap().remove(login);
+}
+
+pub fn clear_sessions() {
+    registry().lock().unwrap().clear();
 }
 
 fn with_session<F, T>(login: &str, f: F) -> AppResult<T>
@@ -129,20 +135,24 @@ fn access_token_of(login: &str) -> AppResult<String> {
 
 fn authed_post(path: &str, access_token: &str) -> reqwest::blocking::RequestBuilder {
     let url = format!("{API}{path}?access_token={access_token}");
-    http::shared().post(url)
+    http::shared()
+        .post(url)
+        .timeout(std::time::Duration::from_secs(20))
 }
 
-fn parse_response<T: for<'de> Deserialize<'de> + Default>(
-    body: &str,
-    label: &str,
-) -> AppResult<T> {
+fn parse_response<T: for<'de> Deserialize<'de> + Default>(body: &str, label: &str) -> AppResult<T> {
     #[derive(Deserialize)]
     struct Wrap<R> {
         #[serde(default = "Option::default")]
         response: Option<R>,
     }
-    let wrap: Wrap<T> = serde_json::from_str(body)
-        .map_err(|e| AppError::Other(format!("{label}: bad JSON: {e}: {body}")))?;
+    let wrap: Wrap<T> = serde_json::from_str(body).map_err(|e| {
+        AppError::Other(format!(
+            "{label}: invalid response (line {}, column {})",
+            e.line(),
+            e.column()
+        ))
+    })?;
     Ok(wrap.response.unwrap_or_default())
 }
 
@@ -169,13 +179,11 @@ pub fn set_account_phone_number(
     let resp = authed_post("/IPhoneService/SetAccountPhoneNumber/v1/", access_token)
         .form(&form)
         .send()
-        .map_err(|e| AppError::Other(format!("SetPhone: {e}")))?;
+        .map_err(|e| AppError::Other(format!("SetPhone: {}", e.without_url())))?;
     let status = resp.status();
     let body = resp.text().unwrap_or_default();
     if !status.is_success() {
-        return Err(AppError::Other(format!(
-            "SET_PHONE_FAIL: HTTP {status}: {body}"
-        )));
+        return Err(AppError::Other(format!("SET_PHONE_FAIL: HTTP {status}")));
     }
     parse_response::<SetPhoneResult>(&body, "SetPhone")
 }
@@ -196,22 +204,22 @@ pub fn is_waiting_for_email_confirmation(access_token: &str) -> AppResult<Waitin
     )
     .header("Content-Length", "0")
     .send()
-    .map_err(|e| AppError::Other(format!("WaitEmail: {e}")))?;
+    .map_err(|e| AppError::Other(format!("WaitEmail: {}", e.without_url())))?;
     let body = resp.text().unwrap_or_default();
     parse_response(&body, "WaitEmail")
 }
 
 /// Send the phone-verification SMS. (Called after email has been confirmed.)
 pub fn send_phone_verification_code(access_token: &str) -> AppResult<()> {
-    let resp = authed_post(
-        "/IPhoneService/SendPhoneVerificationCode/v1/",
-        access_token,
-    )
-    .form(&[("language", "0")])
-    .send()
-    .map_err(|e| AppError::Other(format!("SendSMS: {e}")))?;
+    let resp = authed_post("/IPhoneService/SendPhoneVerificationCode/v1/", access_token)
+        .form(&[("language", "0")])
+        .send()
+        .map_err(|e| AppError::Other(format!("SendSMS: {}", e.without_url())))?;
     if !resp.status().is_success() {
-        return Err(AppError::Other(format!("SEND_SMS_FAIL: HTTP {}", resp.status())));
+        return Err(AppError::Other(format!(
+            "SEND_SMS_FAIL: HTTP {}",
+            resp.status()
+        )));
     }
     Ok(())
 }
@@ -224,13 +232,10 @@ pub fn verify_phone_with_code(access_token: &str, code: &str) -> AppResult<()> {
     )
     .form(&[("code", code.trim())])
     .send()
-    .map_err(|e| AppError::Other(format!("VerifyPhone: {e}")))?;
+    .map_err(|e| AppError::Other(format!("VerifyPhone: {}", e.without_url())))?;
     let status = resp.status();
-    let body = resp.text().unwrap_or_default();
     if !status.is_success() {
-        return Err(AppError::Other(format!(
-            "VERIFY_PHONE_FAIL: HTTP {status}: {body}"
-        )));
+        return Err(AppError::Other(format!("VERIFY_PHONE_FAIL: HTTP {status}")));
     }
     Ok(())
 }
@@ -285,13 +290,11 @@ fn add_authenticator_with(
     let resp = authed_post("/ITwoFactorService/AddAuthenticator/v1/", access_token)
         .form(&form)
         .send()
-        .map_err(|e| AppError::Other(format!("AddAuth: {e}")))?;
+        .map_err(|e| AppError::Other(format!("AddAuth: {}", e.without_url())))?;
     let status = resp.status();
     let body = resp.text().unwrap_or_default();
     if !status.is_success() {
-        return Err(AppError::Other(format!(
-            "ADD_AUTH_FAIL: HTTP {status}: {body}"
-        )));
+        return Err(AppError::Other(format!("ADD_AUTH_FAIL: HTTP {status}")));
     }
     let out: AddAuthResult = parse_response(&body, "AddAuth")?;
     match out.status {
@@ -359,7 +362,10 @@ pub fn finalize_add(
         ("authenticator_code", code),
         ("authenticator_time", server_time.to_string()),
         ("activation_code", activation_code.trim().to_string()),
-        ("validate_sms_code", if validate_sms { "1".into() } else { "0".into() }),
+        (
+            "validate_sms_code",
+            if validate_sms { "1".into() } else { "0".into() },
+        ),
         ("try_number", try_number.to_string()),
     ];
     let resp = authed_post(
@@ -368,13 +374,11 @@ pub fn finalize_add(
     )
     .form(&form)
     .send()
-    .map_err(|e| AppError::Other(format!("Finalize: {e}")))?;
+    .map_err(|e| AppError::Other(format!("Finalize: {}", e.without_url())))?;
     let status = resp.status();
     let body = resp.text().unwrap_or_default();
     if !status.is_success() {
-        return Err(AppError::Other(format!(
-            "FINALIZE_FAIL: HTTP {status}: {body}"
-        )));
+        return Err(AppError::Other(format!("FINALIZE_FAIL: HTTP {status}")));
     }
     let out: FinalizeResult = parse_response(&body, "Finalize")?;
     Ok(out)
@@ -406,6 +410,7 @@ pub fn mafile_from_add(
         phone_number_hint: add.phone_number_hint.clone(),
         confirm_type: None,
         fully_enrolled: Some(fully_enrolled),
+        recovery_pending: true,
         session: Some(SessionData {
             steam_id,
             access_token,
@@ -470,12 +475,6 @@ pub struct AddDiagnostic {
     pub suggested_path: &'static str,
 }
 
-/// Truncate a snippet for trace logs. We never log arbitrarily-large bodies
-/// because they may carry tokens or activation codes mid-transit.
-fn truncate(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
-}
-
 pub fn diagnose(login: &str) -> AppResult<AddDiagnostic> {
     // 2-second throttle: the UI tends to call this on every phase change of
     // the wizard, which can fire 3-4 times per real user action. Cache the
@@ -536,26 +535,28 @@ where
 
 fn diagnose_once(login: &str) -> AppResult<AddDiagnostic> {
     let (tok, sid, login_confirms) = with_session(login, |s| {
-        Ok((s.access_token.clone(), s.steam_id.to_string(), s.login_confirmations.clone()))
+        Ok((
+            s.access_token.clone(),
+            s.steam_id.to_string(),
+            s.login_confirmations.clone(),
+        ))
     })?;
 
-    tracing::info!("auth_add_diagnose: querying status for {login} (login_confirms={:?})", login_confirms);
+    tracing::info!(
+        "auth_add_diagnose: querying status for {login} (login_confirms={:?})",
+        login_confirms
+    );
 
     // ── QueryStatus. Requires `steamid` in the form body.
     let status_resp = authed_post("/ITwoFactorService/QueryStatus/v1/", &tok)
         .form(&[("steamid", sid.as_str())])
         .send()
-        .map_err(|e| AppError::Other(format!("QueryStatus: {e}")))?;
+        .map_err(|e| AppError::Other(format!("QueryStatus: {}", e.without_url())))?;
     let status_code = status_resp.status();
     let status_body = status_resp.text().unwrap_or_default();
-    tracing::info!(
-        "auth_add_diagnose: QueryStatus HTTP {status_code}, body={}",
-        truncate(&status_body, 200)
-    );
+    tracing::info!("auth_add_diagnose: QueryStatus HTTP {status_code}");
     if !status_code.is_success() {
-        return Err(AppError::Other(format!(
-            "QueryStatus HTTP {status_code}: {status_body}"
-        )));
+        return Err(AppError::Other(format!("QueryStatus HTTP {status_code}")));
     }
     let qs: QueryStatusInner = parse_response(&status_body, "QueryStatus").unwrap_or_default();
 
@@ -583,7 +584,7 @@ fn diagnose_once(login: &str) -> AppResult<AddDiagnostic> {
             }
         }
         Err(e) => {
-            tracing::warn!("auth_add_diagnose: PhoneStatus err: {e}");
+            tracing::warn!("auth_add_diagnose: PhoneStatus err: {}", e.without_url());
             PhoneStatusInner::default()
         }
     };
@@ -689,11 +690,24 @@ pub struct AddCreatePublic {
 }
 
 pub fn add_create(login: &str) -> AppResult<AddCreatePublic> {
+    if let Some(existing) = with_session(login, |s| Ok(s.add.clone()))? {
+        return Ok(AddCreatePublic {
+            phone_number_hint: existing.phone_number_hint,
+            server_time: existing.server_time,
+        });
+    }
     with_fresh_token(login, "auth_add_create", || {
         let (tok, sid, device) = with_session(login, |s| {
-            Ok((s.access_token.clone(), s.steam_id.to_string(), s.device_id.clone()))
+            Ok((
+                s.access_token.clone(),
+                s.steam_id.to_string(),
+                s.device_id.clone(),
+            ))
         })?;
-        let res = add_authenticator_with(&tok, &sid, &device)?;
+        let mut res = add_authenticator_with(&tok, &sid, &device)?;
+        if res.account_name.is_empty() {
+            res.account_name = login.to_string();
+        }
         let public = AddCreatePublic {
             phone_number_hint: res.phone_number_hint.clone(),
             server_time: res.server_time.clone(),
@@ -731,6 +745,7 @@ pub fn add_persist_partial(login: &str, workspace: &std::path::Path) -> AppResul
         ))
     })?;
     let mf = mafile_from_add(&add, sid, tok, refresh, sess_id, device, false);
+    save_recovery(workspace, login, &mf)?;
     crate::sda::vault::save_plain(workspace, login, &mf)?;
     // NOTE: we deliberately do NOT call set_authenticator_meta here — the
     // account isn't fully bound yet, and we don't want the poller to pick it
@@ -756,6 +771,19 @@ pub fn add_finalize(
     try_number: u32,
     validate_sms: bool,
 ) -> AppResult<AddFinalizePublic> {
+    if with_session(login, |s| Ok(s.finalized))? {
+        return with_session(login, |s| {
+            Ok(AddFinalizePublic {
+                success: true,
+                want_more: false,
+                status: 1,
+                revocation_code: s.add.as_ref().map(|a| a.revocation_code.clone()),
+            })
+        });
+    }
+    if try_number == 0 || try_number > 5 {
+        return Err(AppError::NotReady("ADD_RETRY_LIMIT".into()));
+    }
     with_fresh_token(login, "auth_add_finalize", || {
         let (tok, sid, secret) = with_session(login, |s| {
             let add = s
@@ -771,6 +799,7 @@ pub fn add_finalize(
         let r = finalize_add(&tok, &sid, &secret, sms_code, try_number, validate_sms)?;
         let revocation = if r.success {
             with_session(login, |s| {
+                s.finalized = true;
                 Ok(s.add.as_ref().map(|a| a.revocation_code.clone()))
             })?
         } else {
@@ -785,11 +814,14 @@ pub fn add_finalize(
     })
 }
 
-/// Persist the freshly-activated authenticator. ONLY call this after the user
-/// has confirmed they wrote down the revocation code (UI gate).
+/// Persist immediately after activation, before exposing success to the UI.
+/// A separate acknowledgement records that the recovery code was written down.
 ///
 /// Returns the path of the saved maFile so the caller can log it.
 pub fn add_persist(login: &str, workspace: &std::path::Path) -> AppResult<()> {
+    if !with_session(login, |s| Ok(s.finalized))? {
+        return Err(AppError::NotReady("CONF_NOT_ENROLLED".into()));
+    }
     let (add, tok, refresh, sid, sess_id, device) = with_session(login, |s| {
         let add = s
             .add
@@ -806,6 +838,7 @@ pub fn add_persist(login: &str, workspace: &std::path::Path) -> AppResult<()> {
         ))
     })?;
     let mf = mafile_from_add(&add, sid, tok, refresh, sess_id, device, true);
+    save_recovery(workspace, login, &mf)?;
     crate::sda::vault::save_plain(workspace, login, &mf)?;
     crate::workspace::set_authenticator_meta(
         workspace,
@@ -813,6 +846,172 @@ pub fn add_persist(login: &str, workspace: &std::path::Path) -> AppResult<()> {
         true,
         Some(mf.account_name.clone()),
     )?;
+    Ok(())
+}
+
+fn recovery_path(ws: &std::path::Path, login: &str) -> AppResult<std::path::PathBuf> {
+    Ok(crate::workspace::auth_dir(ws, login)?.join("enrollment.dpapi"))
+}
+fn save_recovery(ws: &std::path::Path, login: &str, mf: &MaFile) -> AppResult<()> {
+    crate::workspace::validate_auth_identity(ws, login, mf)?;
+    let json = zeroize::Zeroizing::new(mf.to_json_pretty()?);
+    crate::storage::atomic_write(
+        &recovery_path(ws, login)?,
+        &super::credentials::protect(json.as_bytes(), false)?,
+    )
+}
+
+#[derive(Serialize)]
+pub struct Resume {
+    pub phase: &'static str,
+    pub phone_hint: String,
+    pub revocation_code: Option<String>,
+}
+pub fn resume(ws: &std::path::Path, login: &str) -> AppResult<Resume> {
+    super::vault::ensure_writable(ws)?;
+    let recovery = recovery_path(ws, login)?;
+    let mf = if recovery.exists() {
+        let bytes = super::credentials::protect(&std::fs::read(&recovery)?, true)?;
+        Some(MaFile::from_json_bytes(&bytes)?)
+    } else {
+        super::vault::load_plain(ws, login)?
+    };
+    let Some(mf) = mf.filter(|mf| mf.fully_enrolled == Some(false) || mf.recovery_pending) else {
+        return Ok(Resume {
+            phase: "none",
+            phone_hint: String::new(),
+            revocation_code: None,
+        });
+    };
+    crate::workspace::validate_auth_identity(ws, login, &mf)?;
+    let session = mf
+        .session
+        .as_ref()
+        .ok_or_else(|| AppError::NotReady("ADD_NO_SESSION".into()))?;
+    let finalized = mf.fully_enrolled == Some(true);
+    let add = AddAuthResult {
+        status: mf.status.unwrap_or(1),
+        shared_secret: mf.shared_secret.clone(),
+        identity_secret: mf.identity_secret.clone(),
+        revocation_code: mf.revocation_code.clone(),
+        uri: mf.uri.clone(),
+        serial_number: mf.serial_number.clone(),
+        secret_1: mf.secret_1.clone(),
+        server_time: mf.server_time.unwrap_or(0).to_string(),
+        account_name: mf.account_name.clone(),
+        token_gid: mf.token_gid.clone(),
+        phone_number_hint: mf.phone_number_hint.clone(),
+    };
+    registry().lock().unwrap().insert(
+        login.to_string(),
+        AddSession {
+            access_token: session.access_token.clone(),
+            refresh_token: session.refresh_token.clone(),
+            steam_id: session.steam_id,
+            session_id: session.session_id.clone(),
+            add: Some(add),
+            device_id: mf.device_id.clone(),
+            finalized,
+            login_confirmations: Vec::new(),
+        },
+    );
+    // Rehydrate the ordinary vault if the original write failed after the
+    // durable emergency copy (e.g. the user locked the vault during the API call).
+    super::vault::save_plain(ws, login, &mf)?;
+    if finalized {
+        crate::workspace::set_authenticator_meta(ws, login, true, Some(mf.account_name.clone()))?;
+    }
+    Ok(Resume {
+        phase: if finalized { "revocation" } else { "finalize" },
+        phone_hint: mf.phone_number_hint.clone(),
+        revocation_code: finalized.then(|| mf.revocation_code.clone()),
+    })
+}
+pub fn acknowledge(ws: &std::path::Path, login: &str) -> AppResult<()> {
+    let mut mf = super::vault::load_plain(ws, login)?
+        .ok_or_else(|| AppError::NotReady("ADD_NOT_CREATED".into()))?;
+    if mf.fully_enrolled != Some(true) {
+        return Err(AppError::NotReady("CONF_NOT_ENROLLED".into()));
+    }
+    mf.recovery_pending = false;
+    super::vault::save_plain(ws, login, &mf)?;
+    let path = recovery_path(ws, login)?;
+    if path.exists() {
+        std::fs::remove_file(path)?;
+    }
     drop_session(login);
     Ok(())
+}
+pub fn cancel(ws: &std::path::Path, login: &str) -> AppResult<()> {
+    let issued = registry()
+        .lock()
+        .unwrap()
+        .get(login)
+        .is_some_and(|s| s.add.is_some());
+    if issued && !recovery_path(ws, login)?.exists() {
+        return Err(AppError::NotReady("ADD_UNSAVED_SECRETS".into()));
+    }
+    drop_session(login);
+    Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[test]
+    fn issued_secrets_survive_restart_and_activation_is_saved_before_acknowledgement() {
+        let root =
+            std::env::temp_dir().join(format!("shadow-enrollment-{}", rand::random::<u64>()));
+        let login = format!("enroll_{}", rand::random::<u32>());
+        crate::workspace::ensure_account_dirs(&root, &login).unwrap();
+        let mut mf = MaFile::default();
+        mf.account_name = login.clone();
+        mf.shared_secret = "MTIzNDU2Nzg5MDEyMzQ1Njc4OTA=".into();
+        mf.identity_secret = mf.shared_secret.clone();
+        mf.revocation_code = "R-TEST-RECOVERY".into();
+        mf.fully_enrolled = Some(false);
+        mf.recovery_pending = true;
+        mf.session = Some(SessionData {
+            steam_id: 123,
+            access_token: "access".into(),
+            refresh_token: "refresh".into(),
+            session_id: "cookie".into(),
+        });
+        save_recovery(&root, &login, &mf).unwrap();
+        let protected = std::fs::read(recovery_path(&root, &login).unwrap()).unwrap();
+        assert!(!protected
+            .windows(mf.shared_secret.len())
+            .any(|w| w == mf.shared_secret.as_bytes()));
+        assert_eq!(resume(&root, &login).unwrap().phase, "finalize");
+        assert!(acknowledge(&root, &login).is_err());
+        assert!(add_finalize(&login, "", 6, true).is_err());
+        with_session(&login, |s| {
+            s.finalized = true;
+            Ok(())
+        })
+        .unwrap();
+        add_persist(&login, &root).unwrap();
+        drop_session(&login); // Simulate closing/restarting the app before UI acknowledgement.
+        let resumed = resume(&root, &login).unwrap();
+        assert_eq!(resumed.phase, "revocation");
+        assert_eq!(resumed.revocation_code.as_deref(), Some("R-TEST-RECOVERY"));
+        assert!(
+            crate::workspace::read_meta(&crate::workspace::account_dir(&root, &login))
+                .has_authenticator
+        );
+        acknowledge(&root, &login).unwrap();
+        assert_eq!(resume(&root, &login).unwrap().phase, "none");
+        assert!(!recovery_path(&root, &login).unwrap().exists());
+        assert!(std::fs::canonicalize(&root)
+            .unwrap()
+            .starts_with(std::fs::canonicalize(std::env::temp_dir()).unwrap()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn malformed_response_does_not_echo_secrets() {
+        let error = parse_response::<serde_json::Value>("SECRET_TOKEN_MUST_NOT_APPEAR", "AddAuth")
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("SECRET_TOKEN_MUST_NOT_APPEAR"));
+    }
 }

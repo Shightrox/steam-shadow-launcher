@@ -31,6 +31,8 @@ const STEAM_ALPHABET: &[u8; 26] = b"23456789BCDFGHJKMNPQRTVWXY";
 /// set by [`sync_time`]. Zero until aligned.
 static TIME_OFFSET: AtomicI64 = AtomicI64::new(0);
 static TIME_OFFSET_SYNCED_AT: AtomicI64 = AtomicI64::new(0);
+static LAST_ATTEMPT: AtomicI64 = AtomicI64::new(0);
+static SYNC: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Refresh the offset at most once per hour.
 const SYNC_TTL_SECS: i64 = 60 * 60;
 
@@ -46,26 +48,35 @@ fn local_unix() -> i64 {
 pub fn server_time() -> i64 {
     let now = local_unix();
     let synced_at = TIME_OFFSET_SYNCED_AT.load(Ordering::Relaxed);
-    if synced_at == 0 || now.saturating_sub(synced_at) > SYNC_TTL_SECS {
-        // Best-effort: a sync failure shouldn't prevent code generation;
-        // we just fall back to local time (which is usually within seconds).
-        let _ = sync_time();
+    let attempted = LAST_ATTEMPT.load(Ordering::Relaxed);
+    if (synced_at == 0 || now.saturating_sub(synced_at) > SYNC_TTL_SECS)
+        && now.saturating_sub(attempted) >= 60
+        && LAST_ATTEMPT
+            .compare_exchange(attempted, now, Ordering::SeqCst, Ordering::Relaxed)
+            .is_ok()
+    {
+        std::thread::spawn(|| {
+            if let Err(e) = sync_time() {
+                tracing::debug!("Time sync deferred: {e}");
+            }
+        });
     }
-    now + TIME_OFFSET.load(Ordering::Relaxed)
+    // Code generation is always local; network availability never gates OTP.
+    local_unix() + TIME_OFFSET.load(Ordering::Relaxed)
 }
 
 /// Hit `ITwoFactorService/QueryTime/v1` and store the offset. Idempotent.
 pub fn sync_time() -> AppResult<()> {
+    let _guard = SYNC.lock().unwrap();
+    LAST_ATTEMPT.store(local_unix(), Ordering::Relaxed);
     let resp = crate::http::shared()
         .post("https://api.steampowered.com/ITwoFactorService/QueryTime/v1/")
         .header("Content-Length", "0")
+        .timeout(std::time::Duration::from_secs(5))
         .send()
         .map_err(|e| AppError::Other(format!("QueryTime: {e}")))?;
     if !resp.status().is_success() {
-        return Err(AppError::Other(format!(
-            "QueryTime HTTP {}",
-            resp.status()
-        )));
+        return Err(AppError::Other(format!("QueryTime HTTP {}", resp.status())));
     }
     let body: serde_json::Value = resp
         .json()
@@ -95,8 +106,8 @@ fn decode_secret(b64: &str) -> AppResult<Vec<u8>> {
 pub fn generate_code_at(shared_secret_b64: &str, time: i64) -> AppResult<String> {
     let key = decode_secret(shared_secret_b64)?;
     let counter = (time / 30) as u64;
-    let mut mac = HmacSha1::new_from_slice(&key)
-        .map_err(|e| AppError::Other(format!("hmac key: {e}")))?;
+    let mut mac =
+        HmacSha1::new_from_slice(&key).map_err(|e| AppError::Other(format!("hmac key: {e}")))?;
     mac.update(&counter.to_be_bytes());
     let hash = mac.finalize().into_bytes();
     // RFC 4226 dynamic truncation, keep high-bit-cleared u32.
@@ -130,8 +141,8 @@ pub fn period_remaining() -> i64 {
 /// Caller is responsible for URL-encoding the result.
 pub fn confirmation_key(identity_secret_b64: &str, time: i64, tag: &str) -> AppResult<String> {
     let key = decode_secret(identity_secret_b64)?;
-    let mut mac = HmacSha1::new_from_slice(&key)
-        .map_err(|e| AppError::Other(format!("hmac key: {e}")))?;
+    let mut mac =
+        HmacSha1::new_from_slice(&key).map_err(|e| AppError::Other(format!("hmac key: {e}")))?;
     mac.update(&time.to_be_bytes());
     let tag_bytes = tag.as_bytes();
     let cut = tag_bytes.len().min(32);

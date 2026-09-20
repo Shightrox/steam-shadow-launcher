@@ -8,11 +8,14 @@
 
 pub mod add;
 pub mod confirmations;
+pub mod credentials;
 pub mod crypto;
 pub mod login;
 pub mod mafile;
 pub mod poller;
+pub mod reauth;
 pub mod relogin_flag;
+pub mod session;
 pub mod session_state;
 pub mod totp;
 pub mod vault;

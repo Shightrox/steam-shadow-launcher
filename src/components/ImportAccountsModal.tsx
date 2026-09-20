@@ -18,16 +18,19 @@ export function ImportAccountsModal({ open, onClose, onImported, existingLogins 
 
   useEffect(() => {
     if (!open) return;
+    let alive = true;
     setErr(null);
     setSelected(new Set());
     api.discoverSteamAccounts()
       .then((r) => {
+        if (!alive) return;
         setItems(r);
         // Pre-select non-imported ones
         setSelected(new Set(r.filter((a) => !existingLogins.has(a.accountName)).map((a) => a.accountName)));
       })
-      .catch((e) => setErr(String(e)));
-  }, [open, existingLogins]);
+      .catch((e) => { if (alive) setErr(String(e)); });
+    return () => { alive = false; };
+  }, [open]);
 
   if (!open) return null;
 
@@ -64,7 +67,7 @@ export function ImportAccountsModal({ open, onClose, onImported, existingLogins 
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={() => !busy && onClose()}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>{t("import.title")}</h2>
         {items.length === 0 ? (

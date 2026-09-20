@@ -45,8 +45,8 @@ struct RsaKeyInner {
 /// One allowed confirmation method, as returned by BeginAuthSession.
 ///
 /// Steam enum `k_EAuthSessionGuardType_*`:
-///   1 = Unknown, 2 = None, 3 = EmailCode, 4 = DeviceCode,
-///   5 = DeviceConfirmation, 6 = EmailConfirmation, 7 = MachineToken, 9 = LegacyMachineAuth.
+///   1 = None, 2 = EmailCode, 3 = DeviceCode, 4 = DeviceConfirmation,
+///   5 = EmailConfirmation, 6 = MachineToken, 7 = LegacyMachineAuth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllowedConfirmation {
     #[serde(default, rename = "confirmation_type")]
@@ -74,6 +74,10 @@ pub struct BeginOutcome {
     /// Extended domain (if email 2FA is in play).
     #[serde(rename = "extendedDomain", skip_serializing_if = "Option::is_none")]
     pub extended_domain: Option<String>,
+    #[serde(rename = "guardSubmitted")]
+    pub guard_submitted: bool,
+    #[serde(rename = "autoGuardFailed")]
+    pub auto_guard_failed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,14 +162,12 @@ fn fetch_rsa_key(account_name: &str) -> AppResult<RsaKeyInner> {
     let url = format!("{API}/IAuthenticationService/GetPasswordRSAPublicKey/v1/");
     let resp = http::shared()
         .get(&url)
+        .timeout(std::time::Duration::from_secs(20))
         .query(&[("account_name", account_name)])
         .send()
         .map_err(|e| AppError::Other(format!("RSAKey: {e}")))?;
     if !resp.status().is_success() {
-        return Err(AppError::Other(format!(
-            "RSAKey HTTP {}",
-            resp.status()
-        )));
+        return Err(AppError::Other(format!("RSAKey HTTP {}", resp.status())));
     }
     let body: RsaKeyResp = resp
         .json()
@@ -213,25 +215,41 @@ pub fn begin(account_name: &str, password: &str) -> AppResult<BeginOutcome> {
     let resp = http::shared()
         .post(&url)
         .header("Accept", "application/json")
+        .timeout(std::time::Duration::from_secs(20))
         .form(&form)
         .send()
         .map_err(|e| AppError::Other(format!("BeginAuth: {e}")))?;
     let status = resp.status();
+    let result = resp
+        .headers()
+        .get("x-eresult")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if matches!(result.as_str(), "5" | "15") {
+        return Err(AppError::NotReady("AUTH_LOGIN_REJECTED".into()));
+    }
     let body = resp
         .text()
         .map_err(|e| AppError::Other(format!("BeginAuth read: {e}")))?;
     if !status.is_success() {
         return Err(AppError::Other(format!(
-            "BEGIN_AUTH_FAIL: HTTP {status}: {body}"
+            "BEGIN_AUTH_FAIL: HTTP {status}, result={result}"
         )));
     }
-    let parsed: BeginResp = serde_json::from_str(&body)
-        .map_err(|e| AppError::Other(format!("BeginAuth JSON: {e}: {body}")))?;
+    let parsed: BeginResp =
+        serde_json::from_str(&body).map_err(|e| AppError::Other(format!("BeginAuth JSON: {e}")))?;
     let inner = parsed.response;
     tracing::info!(
         "auth_login_begin: client_id={} steam_id={} interval={} confirms={:?}",
-        inner.client_id, inner.steamid, inner.interval,
-        inner.allowed_confirmations.iter().map(|c| c.kind).collect::<Vec<_>>()
+        inner.client_id,
+        inner.steamid,
+        inner.interval,
+        inner
+            .allowed_confirmations
+            .iter()
+            .map(|c| c.kind)
+            .collect::<Vec<_>>()
     );
     if inner.client_id.is_empty() {
         return Err(AppError::Other(format!(
@@ -245,8 +263,14 @@ pub fn begin(account_name: &str, password: &str) -> AppResult<BeginOutcome> {
         steam_id: inner.steamid,
         weak_token: inner.weak_token,
         allowed_confirmations: inner.allowed_confirmations,
-        interval: if inner.interval > 0.0 { inner.interval } else { 5.0 },
+        interval: if inner.interval > 0.0 {
+            inner.interval
+        } else {
+            5.0
+        },
         extended_domain: None,
+        guard_submitted: false,
+        auto_guard_failed: false,
     })
 }
 
@@ -254,8 +278,7 @@ pub fn begin(account_name: &str, password: &str) -> AppResult<BeginOutcome> {
 
 // ── Step 3: Submit guard code ─────────────────────────────────────────────
 
-/// `code_type` values (EAuthSessionGuardType): 3 = EmailCode, 4 = DeviceCode,
-/// 6 = EmailConfirmation, etc.
+/// `code_type` values: 2 = EmailCode, 3 = DeviceCode.
 pub fn submit_code(client_id: &str, steam_id: &str, code: &str, code_type: i64) -> AppResult<()> {
     let url = format!("{API}/IAuthenticationService/UpdateAuthSessionWithSteamGuardCode/v1/");
     let form = [
@@ -266,6 +289,7 @@ pub fn submit_code(client_id: &str, steam_id: &str, code: &str, code_type: i64) 
     ];
     let resp = http::shared()
         .post(&url)
+        .timeout(std::time::Duration::from_secs(20))
         .form(&form)
         .send()
         .map_err(|e| AppError::Other(format!("SubmitCode: {e}")))?;
@@ -294,10 +318,13 @@ pub fn submit_code(client_id: &str, steam_id: &str, code: &str, code_type: i64) 
     );
     if !status.is_success() {
         return Err(AppError::Other(format!(
-            "SUBMIT_CODE_FAIL: HTTP {status} x-eresult={eresult} x-err={emsg}: {body}"
+            "SUBMIT_CODE_FAIL: HTTP {status} x-eresult={eresult}"
         )));
     }
-    // eresult: 1 = OK, 29 = TwoFactorCodeMismatch, 88 = RateLimit
+    if matches!(eresult.as_str(), "5" | "15" | "65" | "88") {
+        return Err(AppError::NotReady("AUTH_GUARD_REJECTED".into()));
+    }
+    // Other failures (including rate limits) remain transient.
     if !eresult.is_empty() && eresult != "1" {
         return Err(AppError::Other(format!(
             "SUBMIT_CODE_FAIL: x-eresult={eresult} x-err={emsg}"
@@ -316,6 +343,7 @@ pub fn poll(client_id: &str, request_id: &str) -> AppResult<PollState> {
     ];
     let resp = http::shared()
         .post(&url)
+        .timeout(std::time::Duration::from_secs(20))
         .form(&form)
         .send()
         .map_err(|e| AppError::Other(format!("Poll: {e}")))?;
@@ -333,17 +361,26 @@ pub fn poll(client_id: &str, request_id: &str) -> AppResult<PollState> {
         "poll: HTTP {status} x-eresult='{eresult}' body_len={}",
         body.len()
     );
+    if matches!(eresult.as_str(), "5" | "15" | "27") {
+        return Ok(PollState::Failed {
+            reason: "AUTH_LOGIN_REJECTED".into(),
+        });
+    }
     if !status.is_success() {
-        // eresult 3 = Expired/Denied (session dead).
         if body.contains("InvalidGrant") || body.contains("AuthSessionExpired") {
             return Ok(PollState::Failed {
                 reason: "SESSION_EXPIRED".into(),
             });
         }
-        return Err(AppError::Other(format!("POLL_FAIL: HTTP {status} x-eresult={eresult}: {body}")));
+        return Err(AppError::Other(format!(
+            "POLL_FAIL: HTTP {status} x-eresult={eresult}"
+        )));
     }
-    let parsed: PollResp = serde_json::from_str(&body)
-        .map_err(|e| AppError::Other(format!("Poll JSON: {e}: {body}")))?;
+    if !eresult.is_empty() && eresult != "1" {
+        return Err(AppError::Other(format!("POLL_FAIL: x-eresult={eresult}")));
+    }
+    let parsed: PollResp =
+        serde_json::from_str(&body).map_err(|e| AppError::Other(format!("Poll JSON: {e}")))?;
     let r = parsed.response;
     if !r.access_token.is_empty() && !r.refresh_token.is_empty() {
         // Derive a simple steam_id out of the access-token JWT sub claim.
@@ -383,20 +420,24 @@ fn steam_id_from_jwt(tok: &str) -> Option<String> {
 
 // ── Refresh ───────────────────────────────────────────────────────────────
 
-pub fn refresh_access_token(
-    refresh_token: &str,
-    steam_id: &str,
-) -> AppResult<String> {
+pub fn refresh_access_token(refresh_token: &str, steam_id: &str) -> AppResult<String> {
     let url = format!("{API}/IAuthenticationService/GenerateAccessTokenForApp/v1/");
-    let form = [
-        ("refresh_token", refresh_token.to_string()),
-        ("steamid", steam_id.to_string()),
-    ];
+    let input = serde_json::json!({ "refresh_token": refresh_token, "steamid": steam_id });
+    let form = [("input_json", input.to_string())];
     let resp = http::shared()
         .post(&url)
+        .timeout(std::time::Duration::from_secs(20))
         .form(&form)
         .send()
-        .map_err(|e| AppError::Other(format!("Refresh: {e}")))?;
+        .map_err(|e| AppError::Other(format!("Refresh: {}", e.without_url())))?;
+    let result = resp
+        .headers()
+        .get("x-eresult")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.parse::<u32>().ok());
+    if matches!(resp.status().as_u16(), 401 | 403) || matches!(result, Some(5 | 15 | 27)) {
+        return Err(AppError::NotReady("CONF_NEEDS_RELOGIN".into()));
+    }
     if !resp.status().is_success() {
         return Err(AppError::Other(format!(
             "REFRESH_FAIL: HTTP {}",
@@ -410,6 +451,7 @@ pub fn refresh_access_token(
         .get("response")
         .and_then(|x| x.get("access_token"))
         .and_then(|x| x.as_str())
+        .filter(|token| !token.trim().is_empty())
         .ok_or_else(|| AppError::Other("REFRESH_NO_TOKEN".into()))?;
     Ok(tok.to_string())
 }

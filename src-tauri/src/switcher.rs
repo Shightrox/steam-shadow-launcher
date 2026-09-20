@@ -10,55 +10,15 @@ use winreg::RegKey;
 
 #[allow(dead_code)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+static SWITCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const DETACHED_PROCESS: u32 = 0x0000_0008;
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
-fn now_ts() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-fn backups_dir(workspace: &Path) -> PathBuf {
-    workspace.join("backups")
-}
-
-pub fn backup_loginusers(workspace: &Path, main: &MainSteamInfo) -> AppResult<Option<PathBuf>> {
-    let src = main.install_dir.join("config").join("loginusers.vdf");
-    if !src.exists() {
-        return Ok(None);
-    }
-    let dir = backups_dir(workspace);
-    fs::create_dir_all(&dir)?;
-    let ts = now_ts();
-    let dst = dir.join(format!("loginusers-{ts}.vdf"));
-    fs::copy(&src, &dst)?;
-    Ok(Some(dst))
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct RegistryBackup {
-    timestamp: u64,
-    auto_login_user: Option<String>,
-}
-
-pub fn backup_registry(workspace: &Path) -> AppResult<PathBuf> {
-    let dir = backups_dir(workspace);
-    fs::create_dir_all(&dir)?;
-    let key = RegKey::predef(HKEY_CURRENT_USER)
+fn read_autologin() -> Option<String> {
+    RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey_with_flags(r"Software\Valve\Steam", KEY_READ)
-        .ok();
-    let auto = key.and_then(|k| k.get_value::<String, _>("AutoLoginUser").ok());
-    let ts = now_ts();
-    let backup = RegistryBackup {
-        timestamp: ts,
-        auto_login_user: auto,
-    };
-    let path = dir.join(format!("registry-{ts}.json"));
-    fs::write(&path, serde_json::to_string_pretty(&backup)?)?;
-    Ok(path)
+        .ok()
+        .and_then(|key| key.get_value("AutoLoginUser").ok())
 }
 
 /// Patch loginusers.vdf in place: keep ALL user blocks, but set flags so
@@ -142,7 +102,10 @@ fn diagnose_state(main: &MainSteamInfo, target_login: &str) -> AppResult<()> {
         for (n, mr, al, rp) in &accounts {
             tracing::info!(
                 "  - {} MostRecent={} AllowAutoLogin={} RememberPassword={}",
-                n, mr, al, rp
+                n,
+                mr,
+                al,
+                rp
             );
         }
     } else {
@@ -164,7 +127,11 @@ fn diagnose_state(main: &MainSteamInfo, target_login: &str) -> AppResult<()> {
     if let Ok(b) = fs::read(&cfg) {
         let txt = String::from_utf8_lossy(&b);
         let has_cc = txt.contains("ConnectCache");
-        tracing::info!("diagnose: config.vdf size={} has ConnectCache={}", b.len(), has_cc);
+        tracing::info!(
+            "diagnose: config.vdf size={} has ConnectCache={}",
+            b.len(),
+            has_cc
+        );
     }
     let _ = target_login;
     Ok(())
@@ -213,9 +180,9 @@ fn isolate_target_account_checked(txt: &str, target_login: &str) -> (String, boo
     #[derive(Default, Clone)]
     struct Block {
         #[allow(dead_code)]
-        start: usize,         // line index of steamid line
-        open: usize,          // line index of opening brace
-        close: usize,         // line index of closing brace
+        start: usize, // line index of steamid line
+        open: usize,  // line index of opening brace
+        close: usize, // line index of closing brace
         account_name: String,
     }
     let mut blocks: Vec<Block> = Vec::new();
@@ -323,7 +290,12 @@ fn isolate_target_account_checked(txt: &str, target_login: &str) -> (String, boo
             let t = line.trim_start();
             let is_target = b.account_name.eq_ignore_ascii_case(target_login);
             let rewritten = if t.starts_with("\"MostRecent\"") {
-                Some(make_kv(&indent, "MostRecent", if is_target { "1" } else { "0" }, newline))
+                Some(make_kv(
+                    &indent,
+                    "MostRecent",
+                    if is_target { "1" } else { "0" },
+                    newline,
+                ))
             } else if is_target && t.starts_with("\"AllowAutoLogin\"") {
                 Some(make_kv(&indent, "AllowAutoLogin", "1", newline))
             } else if is_target && t.starts_with("\"RememberPassword\"") {
@@ -409,16 +381,24 @@ pub fn write_autologin(login: &str) -> AppResult<()> {
 }
 
 pub fn restore_autologin(prev: Option<String>) -> AppResult<()> {
-    if let Some(p) = prev {
-        write_autologin(&p)?;
+    match prev {
+        Some(login) => write_autologin(&login),
+        None => {
+            let key = RegKey::predef(HKEY_CURRENT_USER)
+                .open_subkey_with_flags(r"Software\Valve\Steam", KEY_WRITE)
+                .map_err(|e| AppError::Registry(e.to_string()))?;
+            match key.delete_value("AutoLoginUser") {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(AppError::Registry(e.to_string())),
+            }
+        }
     }
-    Ok(())
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SwitchResult {
-    pub vdf_backup: Option<PathBuf>,
-    pub reg_backup: PathBuf,
+    pub restore_point: PathBuf,
     pub steam_pid: u32,
     pub previous_autologin: Option<String>,
 }
@@ -428,10 +408,16 @@ pub fn switch_to(
     main: &MainSteamInfo,
     target_login: &str,
 ) -> AppResult<SwitchResult> {
-    let prev_autologin = main.autologin_user.clone();
-    let vdf_backup = backup_loginusers(workspace, main)?;
-    let reg_backup = backup_registry(workspace)?;
+    let _operation = SWITCH_LOCK.lock().unwrap();
     steam_process::graceful_shutdown(&main.steam_exe)?;
+    let prev_autologin = read_autologin();
+    let path = main.install_dir.join("config/loginusers.vdf");
+    let vdf = if path.exists() {
+        Some(fs::read(&path)?)
+    } else {
+        None
+    };
+    let restore_point = crate::backups::create(workspace, vdf, prev_autologin.clone())?;
     // Wait for steam to fully release file handles before patching.
     std::thread::sleep(std::time::Duration::from_millis(700));
     // Diagnostic: log accounts present in loginusers.vdf with their flags,
@@ -439,12 +425,6 @@ pub fn switch_to(
     // information we need to understand why auto-login fails.
     diagnose_state(main, target_login).ok();
     patch_loginusers(main, target_login)?;
-    // Save the patched VDF copy for inspection.
-    if let Ok(b) = fs::read(main.install_dir.join("config").join("loginusers.vdf")) {
-        let dir = backups_dir(workspace);
-        let ts = now_ts();
-        let _ = fs::write(dir.join(format!("loginusers-PATCHED-{ts}.vdf")), &b);
-    }
     write_autologin(target_login)?;
     // IMPORTANT: do NOT pass `-login <user>` here. Modern Steam uses two
     // distinct login paths:
@@ -467,50 +447,24 @@ pub fn switch_to(
         .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
         .spawn()
         .map_err(|e| AppError::Process(format!("spawn steam.exe: {e}")))?;
-    tracing::info!("switch_to({}): spawned steam pid={}", target_login, child.id());
+    tracing::info!(
+        "switch_to({}): spawned steam pid={}",
+        target_login,
+        child.id()
+    );
     Ok(SwitchResult {
-        vdf_backup,
-        reg_backup,
+        restore_point,
         steam_pid: child.id(),
         previous_autologin: prev_autologin,
     })
 }
 
 pub fn revert_last(workspace: &Path, main: &MainSteamInfo) -> AppResult<()> {
-    let dir = backups_dir(workspace);
-    if !dir.exists() {
-        return Err(AppError::NotFound("no backups".into()));
-    }
-    // pick newest vdf backup
-    let mut entries: Vec<_> = fs::read_dir(&dir)?
-        .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("loginusers-")
-        })
-        .collect();
-    entries.sort_by_key(|e| std::cmp::Reverse(e.metadata().and_then(|m| m.modified()).ok()));
-    if let Some(latest) = entries.first() {
-        let dst = main.install_dir.join("config").join("loginusers.vdf");
-        steam_process::graceful_shutdown(&main.steam_exe)?;
-        fs::copy(latest.path(), &dst)?;
-    }
-    // restore registry
-    let mut reg_entries: Vec<_> = fs::read_dir(&dir)?
-        .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("registry-"))
-        .collect();
-    reg_entries.sort_by_key(|e| std::cmp::Reverse(e.metadata().and_then(|m| m.modified()).ok()));
-    if let Some(latest) = reg_entries.first() {
-        let txt = fs::read_to_string(latest.path())?;
-        let bk: RegistryBackup = serde_json::from_str(&txt)?;
-        if let Some(u) = bk.auto_login_user {
-            write_autologin(&u)?;
-        }
-    }
-    let _ = restore_autologin;
-    Ok(())
+    let _operation = SWITCH_LOCK.lock().unwrap();
+    let snapshot = crate::backups::latest(workspace)?;
+    steam_process::graceful_shutdown(&main.steam_exe)?;
+    crate::backups::restore_vdf(&snapshot, &main.install_dir.join("config/loginusers.vdf"))?;
+    restore_autologin(snapshot.auto_login_user)
 }
 
 #[cfg(test)]

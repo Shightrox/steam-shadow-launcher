@@ -1,4 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke as tauriInvoke } from "@tauri-apps/api/core";
+import { currentWorkspace } from "../state/workspaceContext";
+function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  return tauriInvoke<T>(command, { ...args, expectedWorkspace: currentWorkspace() });
+}
+
 import { open, save } from "@tauri-apps/plugin-dialog";
 
 export interface MainSteamInfo {
@@ -115,6 +120,7 @@ export interface PollerConfig {
 
 export const SANDBOXIE_PROGRESS_EVENT = "sandboxie-download-progress";
 export const AUTH_CONFIRMS_EVENT = "auth://confirmations-changed";
+export const AUTH_CONFIRMS_ERROR_EVENT = "auth://confirmations-error";
 export const AUTH_AUTO_CONFIRMED_EVENT = "auth://auto-confirmed";
 export const AUTH_SESSION_STATE_EVENT = "auth://session-state";
 
@@ -127,6 +133,11 @@ export type SessionState = "ok" | "refreshable" | "needs_relogin" | "no_session"
 export interface AccountAuthStatus {
   login: string;
   hasAuthenticator: boolean;
+  hasSavedPassword: boolean;
+  autoLogin: { state: "none" | "ready" | "cooldown" | "disabled" | "unavailable"; retry_at: number | null };
+  steamId: string | null;
+  enrollment: "none" | "pending" | "recovery";
+  identityMismatch: boolean;
   accountName: string | null;
   importedAt: string | null;
   sessionState: SessionState;
@@ -157,6 +168,20 @@ export interface RespondResult {
   message: string;
 }
 
+export interface TradeItem {
+  assetId: string;
+  appId: number;
+  name: string;
+  amount: string;
+  icon: string;
+}
+
+export interface TradeDetails {
+  partnerSteamId: string;
+  giving: TradeItem[];
+  receiving: TradeItem[];
+}
+
 export interface AuthLockStatus {
   enabled: boolean;
   unlocked: boolean;
@@ -177,6 +202,8 @@ export interface BeginOutcome {
   weakToken: string;
   allowedConfirmations: AllowedConfirmation[];
   interval: number;
+  guardSubmitted: boolean;
+  autoGuardFailed: boolean;
   extendedDomain?: string | null;
 }
 
@@ -246,6 +273,9 @@ export interface UpdateInfo {
 }
 
 export const api = {
+  recoverSettings: () => invoke<Settings>("recover_settings"),
+  cleanupBackups: () => invoke<{ removed: number; migrated: number; retained: number }>("cleanup_backups"),
+  authAddResume: (login: string) => invoke<{ phase: "none" | "finalize" | "revocation"; phone_hint: string; revocation_code: string | null }>("auth_add_resume", { login }),
   detectMainSteam: () => invoke<MainSteamInfo>("detect_main_steam"),
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
@@ -314,10 +344,14 @@ export const api = {
   authSyncTime: () => invoke<void>("auth_sync_time"),
   authConfirmationsList: (login: string) =>
     invoke<Confirmation[]>("auth_confirmations_list", { login }),
+  authConfirmationDetails: (login: string, id: string) =>
+    invoke<TradeDetails>("auth_confirmation_details", { login, id }),
   authConfirmationsRespond: (login: string, ids: string[], op: ConfirmOp) =>
     invoke<RespondResult[]>("auth_confirmations_respond", { login, ids, op }),
-  authLoginBegin: (accountName: string, password: string) =>
-    invoke<BeginOutcome>("auth_login_begin", { accountName, password }),
+  authLoginBegin: (login: string, accountName: string, password: string, rememberPassword: boolean) =>
+    invoke<BeginOutcome>("auth_login_begin", { login, accountName, password, rememberPassword }),
+  authLoginCancel: (clientId: string) => invoke<void>("auth_login_cancel", { clientId }),
+  authPasswordForget: (login: string) => invoke<void>("auth_password_forget", { login }),
   authLoginSubmitCode: (clientId: string, steamId: string, code: string, codeType: number) =>
     invoke<void>("auth_login_submit_code", { clientId, steamId, code, codeType }),
   authLoginPoll: (login: string, clientId: string, requestId: string, allowedConfirmations?: number[]) =>

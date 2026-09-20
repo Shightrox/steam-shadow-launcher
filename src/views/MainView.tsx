@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../state/store";
 import { AccountCard } from "../components/AccountCard";
 import { AddAccountModal } from "../components/AddAccountModal";
@@ -11,8 +11,10 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { Spinner } from "../components/Spinner";
 import { api, type RunningSandbox } from "../api/tauri";
 import { useI18n } from "../i18n";
+import { LaunchModeSwitch } from "../components/LaunchModeSwitch";
+import { Icon } from "../components/Icon";
 
-export function MainView() {
+export function MainView({ onManage, onConfirmations }: { onManage(login: string): void; onConfirmations(login?: string): void }) {
   const {
     accounts,
     healths,
@@ -32,6 +34,9 @@ export function MainView() {
     setLaunching,
   } = useApp();
   const { t } = useI18n();
+  const existingLogins = useMemo(() => new Set(accounts.map((a) => a.login)), [accounts]);
+  const launchGuard = useRef(false);
+  const [warnAppId, setWarnAppId] = useState<number | undefined>();
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [warnLogin, setWarnLogin] = useState<string | null>(null);
@@ -42,6 +47,11 @@ export function MainView() {
   const [stoppingLogin, setStoppingLogin] = useState<string | null>(null);
   const [removeFor, setRemoveFor] = useState<string | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [compact, setCompact] = useState(() => localStorage.getItem("shadow.accountLayout") === "rows");
+  const active = accounts.find(a => a.login === selected) ?? accounts[0];
+  const filtered = accounts.filter(a => `${a.displayName ?? ""} ${a.login}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
   const [runningSandboxes, setRunningSandboxes] = useState<
     Record<string, RunningSandbox>
   >({});
@@ -80,7 +90,10 @@ export function MainView() {
     };
   }, [launchingLogin]);
 
-  const tryLaunch = async (login: string) => {
+  const tryLaunch = async (login: string, appid?: number) => {
+    if (launchGuard.current || useApp.getState().launchingLogin) return;
+    launchGuard.current = true;
+    try {
     const mode = settings?.defaultLaunchMode ?? "switch";
     if (mode === "sandbox") {
       try {
@@ -89,25 +102,28 @@ export function MainView() {
           setAdminPrompt({ login });
           return;
         }
-      } catch {}
+      } catch (e) { toast("error", String(e)); return; }
     }
     if (mode === "switch") {
       try {
         const games = await api.listRunningGames();
         if (games.length > 0) {
+          setWarnAppId(appid);
           setWarnLogin(login);
           return;
         }
-      } catch {}
+      } catch (e) { toast("error", String(e)); return; }
     }
-    await doLaunch(login, mode);
+    await doLaunch(login, mode, appid);
+    } finally { launchGuard.current = false; }
   };
 
-  const doLaunch = async (login: string, mode: "switch" | "sandbox") => {
+  const doLaunch = async (login: string, mode: "switch" | "sandbox", appid?: number) => {
     setLaunching(login);
     toast("info", t("main.launchTriggered", { login }));
     try {
-      await launch(login, mode);
+      if (appid !== undefined) await api.launchGame(login, appid, mode);
+      else await launch(login, mode);
       // Auto-clear after 2.5s if the sandbox poll didn't pick it up
       // (switch mode never appears in runningSandboxes).
       window.setTimeout(() => {
@@ -165,21 +181,29 @@ export function MainView() {
       )}
 
       <div className="toolbar">
-        <h1 className="section-title">{t("main.accounts")}</h1>
+        <div className="page-heading"><h1>{t("main.accounts")}<span className="heading-count">{accounts.length}</span></h1></div>
         <div className="spacer" />
-        <button className="xs" onClick={handleRefresh} disabled={refreshing}>
+        <button className="xs ghost icon-button" aria-label={t("common.refresh")} title={t("common.refresh")} onClick={handleRefresh} disabled={refreshing}>
           {refreshing ? (
             <span className="busy-chip">
-              <Spinner size="xs" inline /> {t("main.refreshing")}
+              <Spinner size="xs" inline />
             </span>
           ) : (
-            t("common.refresh")
+            <Icon name="refresh" size={14} />
           )}
         </button>
-        <button className="xs" onClick={() => setShowImport(true)}>{t("main.import")}</button>
-        <button className="xs primary" onClick={() => setShowAdd(true)}>
+        <button className="xs ghost" onClick={() => setShowImport(true)}>{t("main.import")}</button>
+        <button className="xs" onClick={() => setShowAdd(true)}>
           {t("main.add")}
         </button>
+      </div>
+
+      <div className="account-tools"><LaunchModeSwitch /><div className="spacer" />
+        <label className="account-search"><Icon name="search" size={16} /><input type="search" value={query} onChange={e => setQuery(e.target.value)} aria-label={t("design.search")} placeholder={t("design.search")} /></label>
+        <div className="layout-switch" role="group" aria-label={t("design.layout")}>
+          <button className="icon-button" aria-label={t("design.cards")} aria-pressed={!compact} onClick={() => { setCompact(false); localStorage.setItem("shadow.accountLayout", "cards"); }}><Icon name="grid" size={16} /></button>
+          <button className="icon-button" aria-label={t("design.rows")} aria-pressed={compact} onClick={() => { setCompact(true); localStorage.setItem("shadow.accountLayout", "rows"); }}><Icon name="rows" size={16} /></button>
+        </div>
       </div>
 
       {accounts.length === 0 ? (
@@ -187,11 +211,16 @@ export function MainView() {
           {t("main.empty")}<small>{t("main.emptyHint")}</small>
         </div>
       ) : (
-        <div className="grid">
-          {accounts.map((a) => (
+        <div className={`grid account-grid${compact ? " account-rows" : ""}`}>
+          {filtered.length === 0 && <div className="empty">{t("design.noMatches")}</div>}
+          {filtered.map((a) => (
             <AccountCard
               key={a.login}
               account={a}
+              selected={active?.login === a.login}
+              onSelect={() => setSelected(a.login)}
+              onManage={() => onManage(a.login)}
+              onConfirmations={() => onConfirmations(a.login)}
               health={healths[a.login]}
               runningSandbox={runningSandboxes[a.login]}
               launching={launchingLogin === a.login}
@@ -231,7 +260,7 @@ export function MainView() {
       <ImportAccountsModal
         open={showImport}
         onClose={() => setShowImport(false)}
-        existingLogins={new Set(accounts.map((a) => a.login))}
+        existingLogins={existingLogins}
         onImported={() => refreshAccounts()}
       />
       <SwitchWarnDialog
@@ -239,13 +268,13 @@ export function MainView() {
         login={warnLogin}
         onClose={() => setWarnLogin(null)}
         onConfirmed={async () => {
-          if (warnLogin) await doLaunch(warnLogin, "switch");
+          if (warnLogin) await doLaunch(warnLogin, "switch", warnAppId);
         }}
       />
       <GamePickerModal
         open={!!pickGameLogin}
         login={pickGameLogin}
-        defaultMode={settings?.defaultLaunchMode ?? "switch"}
+        onLaunch={tryLaunch}
         onClose={() => setPickGameLogin(null)}
       />
       <AdminRestartDialog

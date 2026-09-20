@@ -70,12 +70,16 @@ export function LoginFlowModal({
   const [phase, setPhase] = useState<Phase>("credentials");
   const [accountName, setAccountName] = useState(defaultAccountName ?? login ?? "");
   const [password, setPassword] = useState("");
+  const [rememberPassword, setRememberPassword] = useState(true);
+  const hasSavedPassword = useApp((s) => !!s.authStatus[login]?.hasSavedPassword);
   const [code, setCode] = useState("");
   const [codeType, setCodeType] = useState(GUARD_TYPE_DEVICE);
   const [begin, setBegin] = useState<BeginOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const attemptEpoch = useRef(0);
+  const activeClientId = useRef<string | null>(null);
 
   // Reset when reopened.
   useEffect(() => {
@@ -83,88 +87,95 @@ export function LoginFlowModal({
     setPhase("credentials");
     setAccountName(defaultAccountName ?? login ?? "");
     setPassword("");
+    setRememberPassword(true);
     setCode("");
     setBegin(null);
     setError(null);
     setBusy(false);
   }, [open, login, defaultAccountName]);
 
-  // Cleanup poll timer on unmount / close.
-  useEffect(() => {
-    if (!open && pollTimer.current) {
-      clearInterval(pollTimer.current);
-      pollTimer.current = null;
-    }
-  }, [open]);
+  // Cancel pending backend credentials on close, account change or unmount.
+  useEffect(() => () => {
+    attemptEpoch.current++;
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    if (activeClientId.current) void api.authLoginCancel(activeClientId.current).catch(() => {});
+    activeClientId.current = null;
+  }, [open, login]);
 
   if (!open) return null;
 
   const stopPolling = () => {
-    if (pollTimer.current) {
-      clearInterval(pollTimer.current);
-      pollTimer.current = null;
-    }
+    if (pollTimer.current) clearTimeout(pollTimer.current);
+    pollTimer.current = null;
   };
 
   const startPolling = (b: BeginOutcome) => {
     stopPolling();
+    const epoch = attemptEpoch.current;
     const interval = Math.max(2, Math.floor(b.interval)) * 1000;
+    const deadline = Date.now() + 120_000;
     const tick = async () => {
+      if (epoch !== attemptEpoch.current) return;
       try {
+        if (Date.now() > deadline) throw new Error(t("auth.login.timeout"));
         const state: PollState = await api.authLoginPoll(
-          login,
-          b.clientId,
-          b.requestId,
+          login, b.clientId, b.requestId,
           b.allowedConfirmations.map((c) => c.confirmation_type),
         );
+        if (epoch !== attemptEpoch.current) return;
         if (state.state === "Done") {
-          stopPolling();
+          activeClientId.current = null;
           setPhase("done");
           await refreshAccounts();
           await refreshAuthStatus();
           await refreshCode(login);
+          if (epoch !== attemptEpoch.current) return;
           toast("success", t("auth.login.success"));
           onSuccess?.();
         } else if (state.state === "NeedsCode") {
-          stopPolling();
-          // Previous code is stale — Steam rejected it. Clear input so the
-          // user can't accidentally resubmit without noticing.
           setCode("");
           setPhase("code");
           setError(t("auth.login.needsCode"));
         } else if (state.state === "Failed") {
-          stopPolling();
+          activeClientId.current = null;
           setPhase("failed");
-          setError(state.reason || "Auth session expired");
+          setError(state.reason || t("auth.login.timeout"));
+        } else {
+          // Schedule only after the previous request completes: no overlapping
+          // polls, duplicate password saves, or duplicate success callbacks.
+          pollTimer.current = setTimeout(tick, interval);
         }
       } catch (e: any) {
-        stopPolling();
+        if (epoch !== attemptEpoch.current) return;
+        void api.authLoginCancel(b.clientId).catch(() => {});
+        activeClientId.current = null;
         setPhase("failed");
         setError(String(e));
       }
     };
-    pollTimer.current = setInterval(tick, interval);
-    // First poll immediately for snappier UX.
-    tick();
+    void tick();
   };
 
   const doBegin = async () => {
+    const epoch = ++attemptEpoch.current;
     setBusy(true);
     setError(null);
     setPhase("beginning");
     try {
-      const b = await api.authLoginBegin(accountName.trim(), password);
+      const b = await api.authLoginBegin(login, accountName.trim(), password, rememberPassword);
+      if (epoch !== attemptEpoch.current) {
+        void api.authLoginCancel(b.clientId).catch(() => {});
+        return;
+      }
+      setPassword("");
+      activeClientId.current = b.clientId;
       setBegin(b);
-      // Decide whether the user must type a code or just click a link.
-      //
-      // confirmation_type:
-      //   2 = None             → no code, go to polling
-      //   3 = EmailCode        → user types 5-char code from email
-      //   4 = DeviceCode       → user types TOTP from SDA
-      //   5 = DeviceConfirmation → user taps "approve" in mobile app, we poll
-      //   6 = EmailConfirmation  → user clicks link in email, we poll
-      //
-      // Only 3 and 4 require the "enter code" screen. 5/6 are click-and-poll.
+      if (b.guardSubmitted || b.allowedConfirmations.some((c) => c.confirmation_type === GUARD_TYPE_NONE)) {
+        setPhase("polling");
+        startPolling(b);
+        return;
+      }
+      if (b.autoGuardFailed) setError(t("auth.login.autoGuardFailed"));
       const needsCode = b.allowedConfirmations.some(
         (c) => c.confirmation_type === GUARD_TYPE_DEVICE
             || c.confirmation_type === GUARD_TYPE_EMAIL,
@@ -185,15 +196,19 @@ export function LoginFlowModal({
       else if (hasEmail) setCodeType(GUARD_TYPE_EMAIL);
       setPhase("code");
     } catch (e: any) {
-      setPhase("credentials");
-      setError(String(e));
+      if (epoch === attemptEpoch.current) {
+        setPassword("");
+        setPhase("credentials");
+        setError(String(e));
+      }
     } finally {
-      setBusy(false);
+      if (epoch === attemptEpoch.current) setBusy(false);
     }
   };
 
   const doSubmitCode = async () => {
     if (!begin) return;
+    const epoch = attemptEpoch.current;
     if (!code.trim()) {
       setError(t("auth.login.codeRequired"));
       return;
@@ -202,17 +217,23 @@ export function LoginFlowModal({
     setError(null);
     try {
       await api.authLoginSubmitCode(begin.clientId, begin.steamId, code.trim(), codeType);
+      if (epoch !== attemptEpoch.current) return;
       setPhase("polling");
       startPolling(begin);
     } catch (e: any) {
-      setError(String(e));
+      if (epoch === attemptEpoch.current) setError(String(e));
     } finally {
-      setBusy(false);
+      if (epoch === attemptEpoch.current) setBusy(false);
     }
   };
 
   const close = () => {
+    attemptEpoch.current++;
     stopPolling();
+    if (activeClientId.current) void api.authLoginCancel(activeClientId.current).catch(() => {});
+    activeClientId.current = null;
+    setPassword("");
+    setCode("");
     onClose();
   };
 
@@ -247,8 +268,21 @@ export function LoginFlowModal({
                   }}
                 />
               </div>
+              <label className="hint" style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <input type="checkbox" checked={rememberPassword} onChange={(e) => setRememberPassword(e.target.checked)} />
+                {t("auth.login.rememberPassword")}
+              </label>
+              <div className="hint">{t(rememberPassword ? "auth.login.rememberHint" : "auth.login.credentialsHint")}</div>
+              {hasSavedPassword && (
+                <button className="xs ghost" onClick={async () => {
+                  try {
+                    await api.authPasswordForget(login);
+                    setRememberPassword(false);
+                    await refreshAuthStatus();
+                  } catch (e) { setError(String(e)); }
+                }}>{t("auth.login.forgetPassword")}</button>
+              )}
               {error && <ErrorBox message={error} />}
-              <div className="hint">{t("auth.login.credentialsHint")}</div>
             </>
           )}
 
@@ -269,12 +303,16 @@ export function LoginFlowModal({
                   <label>{t("auth.login.guardMethod")}</label>
                   <div className="guard-methods">
                     {begin.allowedConfirmations
-                      .filter((c) => [GUARD_TYPE_DEVICE, GUARD_TYPE_EMAIL, GUARD_TYPE_NONE, GUARD_TYPE_DEVICE_CONFIRM].includes(c.confirmation_type))
+                      .filter((c) => [GUARD_TYPE_DEVICE, GUARD_TYPE_EMAIL, GUARD_TYPE_NONE, GUARD_TYPE_DEVICE_CONFIRM, GUARD_TYPE_EMAIL_CONFIRM].includes(c.confirmation_type))
                       .map((c) => (
                         <button
                           key={c.confirmation_type}
                           className={`xs ${codeType === c.confirmation_type ? "active" : ""}`}
-                          onClick={() => setCodeType(c.confirmation_type)}
+                          onClick={() => {
+                            if (c.confirmation_type === GUARD_TYPE_DEVICE_CONFIRM || c.confirmation_type === GUARD_TYPE_EMAIL_CONFIRM) {
+                              setPhase("polling"); startPolling(begin);
+                            } else setCodeType(c.confirmation_type);
+                          }}
                           disabled={c.confirmation_type === GUARD_TYPE_NONE}
                         >
                           {guardMethodLabel(t, c.confirmation_type)}

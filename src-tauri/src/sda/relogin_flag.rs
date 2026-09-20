@@ -43,3 +43,7 @@ mod tests {
         assert!(!is_marked(login));
     }
 }
+
+pub fn clear_all() {
+    set().lock().unwrap().clear();
+}

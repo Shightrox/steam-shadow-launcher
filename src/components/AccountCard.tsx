@@ -1,3 +1,4 @@
+import { useGuardCode, copyGuardCode } from "../state/guardCode";
 import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { api, pickFile, type Account, type AccountHealth, type RunningSandbox } from "../api/tauri";
@@ -7,9 +8,14 @@ import { useApp } from "../state/store";
 import { Spinner } from "./Spinner";
 import { ContextMenu, type ContextMenuEntry } from "./ContextMenu";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { Icon } from "./Icon";
 
 interface Props {
   account: Account;
+  selected: boolean;
+  onSelect(): void;
+  onManage(): void;
+  onConfirmations(): void;
   health?: AccountHealth;
   runningSandbox?: RunningSandbox;
   launching?: boolean;
@@ -35,6 +41,10 @@ function fmtUptime(secsAgo: number): string {
 
 export function AccountCard({
   account,
+  selected,
+  onSelect,
+  onManage,
+  onConfirmations,
   health,
   runningSandbox,
   launching,
@@ -47,17 +57,29 @@ export function AccountCard({
   onPickGame,
   onRefreshAvatar,
 }: Props) {
-  const { t } = useI18n();
-  const { toast, codes, importMafile, removeAuthenticator } = useApp();
+  const { t, lang } = useI18n();
+  const { toast, importMafile, removeAuthenticator } = useApp();
   const [busy, setBusy] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
+  const [failedAvatar, setFailedAvatar] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [remove2faOpen, setRemove2faOpen] = useState(false);
   const [remove2faBusy, setRemove2faBusy] = useState(false);
-  const code = codes[account.login];
-  const has2fa = account.hasAuthenticator;
+  const auth = useApp(s => s.authStatus[account.login]);
+  const session = useApp(s => s.sessionStates[account.login]);
+  const locked = useApp(s => !!s.authLock?.enabled && !s.authLock.unlocked);
+  const confirmations = useApp(s => s.confirmations[account.login]);
+  const confirmationError = useApp(s => s.confErrors[account.login]);
+  const has2fa = account.hasAuthenticator || auth?.hasAuthenticator;
+  const { code, remaining } = useGuardCode(has2fa ? account.login : null);
+  const needsLogin = session === "needs_relogin" || session === "no_session";
+  const autoReady = auth?.hasSavedPassword && auth.autoLogin?.state === "ready";
+  const accessLabel = locked ? t("design.lockedShort") : !has2fa ? t("design.addGuard")
+    : needsLogin && !autoReady ? t("design.signInShort") : autoReady ? t("design.autoReady")
+    : session === "ok" ? t("design.sessionOk") : t("design.access");
 
   const launch = async () => {
+    onSelect();
     setBusy(true);
     try {
       await onLaunch(account.login);
@@ -66,8 +88,9 @@ export function AccountCard({
     }
   };
 
-  const lastLaunch = account.lastLaunchAt
-    ? new Date(parseInt(account.lastLaunchAt) * 1000).toLocaleString()
+  const lastLaunchDate = new Date(Number(account.lastLaunchAt) * 1000);
+  const lastLaunch = account.lastLaunchAt && Number.isFinite(lastLaunchDate.getTime())
+    ? lastLaunchDate.toLocaleString(lang === "ru" ? "ru-RU" : "en-GB", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })
     : t("common.never");
 
   const avatarSrc = account.avatarPath
@@ -97,6 +120,9 @@ export function AccountCard({
   const buildMenu = (): ContextMenuEntry[] => {
     const sid = account.steamId;
     const items: ContextMenuEntry[] = [
+      { label: t("auth.confirmations"), disabled: !has2fa || locked, onClick: onConfirmations },
+      { label: t("design.manageAccess"), onClick: onManage },
+      { divider: true },
       {
         label: t("card.openProfile"),
         disabled: !sid,
@@ -153,7 +179,7 @@ export function AccountCard({
         onClick: async () => {
           if (!code) return;
           try {
-            await navigator.clipboard.writeText(code.code);
+            await copyGuardCode(account.login);
             toast("success", t("auth.copied"));
           } catch (e: any) {
             toast("error", String(e));
@@ -185,7 +211,9 @@ export function AccountCard({
 
   return (
     <div
-      className={`card${launching ? " launching" : ""}`}
+      className={`card account-card${selected ? " selected" : ""}${launching ? " launching" : ""}`}
+      data-login={account.login}
+      onClick={e => { if (!(e.target as HTMLElement).closest("button, input, [role=menu]")) onSelect(); }}
       onContextMenu={(e) => {
         e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY });
@@ -193,26 +221,27 @@ export function AccountCard({
     >
       <div className="head">
         <div className={`avatar${avatarBusy ? " busy" : ""}`} aria-hidden="true">
-          {avatarSrc ? (
+          {avatarSrc && failedAvatar !== avatarSrc ? (
             <img
               src={avatarSrc}
               alt=""
               draggable={false}
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = "none";
-              }}
+              onError={() => setFailedAvatar(avatarSrc)}
             />
           ) : (
             <span className="avatar-fallback">{initial}</span>
           )}
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div
+          <button
             className="title"
+            aria-pressed={selected}
+            title={account.displayName || account.login}
+            onClick={onSelect}
             style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
           >
             {account.displayName || account.login}
-          </div>
+          </button>
           {account.displayName && <div className="sub">@{account.login}</div>}
         </div>
         {onToggleFavorite && (
@@ -220,55 +249,32 @@ export function AccountCard({
             className="fav-btn"
             onClick={() => onToggleFavorite(account.login, !account.favorite)}
             title={account.favorite ? t("card.fav.remove") : t("card.fav.add")}
-            aria-label="favorite"
+            aria-label={account.favorite ? t("card.fav.remove") : t("card.fav.add")}
+            aria-pressed={account.favorite}
           >
             {account.favorite ? "★" : "☆"}
           </button>
         )}
-        <HealthBadge health={health} />
+        <button className="xs icon-button account-more" aria-label={`${t("design.more")} ${account.displayName || account.login}`} aria-haspopup="menu" aria-expanded={!!menu} onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setMenu({ x: r.left, y: r.bottom + 4 }); }}><Icon name="more" size={14} /></button>
       </div>
-      <div className="sub">
-        {t("main.lastLaunch")} {lastLaunch}
-        {account.launchCount > 0 && (
-          <span style={{ marginLeft: 8 }}>
-            · {t("card.launchCount")} {account.launchCount}
-          </span>
-        )}
+      <div className="card-guard-row">
+        <div className="card-guard">
+          {has2fa && !locked ? <>
+            <button className={`card-guard-code${remaining <= 5 ? " expiring" : ""}`} disabled={!code} aria-label={`${t("auth.copy")} ${account.login}`} onClick={async () => {
+              try { await copyGuardCode(account.login); toast("success", t("auth.copied")); }
+              catch (e) { toast("error", String(e)); }
+            }}><span>{code?.code ?? "·····"}</span><Icon name="copy" size={12} /></button>
+            <span className="card-guard-timer">{remaining}{t("design.seconds")}</span>
+            <div className={`guard-progress${remaining <= 5 ? " expiring" : ""}`} aria-hidden="true"><span style={{ width: `${remaining / 30 * 100}%` }} /></div>
+          </> : <button className="guard-setup ghost xs" onClick={onManage}><Icon name="shield" size={12} />{locked ? t("auth.security.unlock") : t("design.addGuard")}</button>}
+        </div>
+        <div className="account-state">{inSandbox ? <span className="sandbox-running" title={t("card.inSandbox")}><span className="state-dot" />Sandbox {fmtUptime(uptimeSec)}</span> : <HealthBadge health={health} compact />}</div>
       </div>
-      {inSandbox && (
-        <div className="sub" style={{ color: "#66ffcc" }}>
-          ▶ {t("card.inSandbox")} · {fmtUptime(uptimeSec)}
-        </div>
-      )}
-      {has2fa && code && (
-        <div className="twofa-widget" title={t("auth.code")}>
-          <span className="twofa-label">{t("card.twofa")}</span>
-          <span
-            className={`twofa-code${code.periodRemaining <= 5 ? " pulse" : ""}`}
-          >
-            {code.code}
-          </span>
-          <span className="twofa-countdown">{code.periodRemaining}s</span>
-          <button
-            className="xs"
-            onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(code.code);
-                toast("success", t("auth.copied"));
-              } catch (e: any) {
-                toast("error", String(e));
-              }
-            }}
-            title={t("auth.copy")}
-          >
-            ⎘
-          </button>
-        </div>
-      )}
+      <div className="card-meta"><span>{t("main.lastLaunch")}<b>{lastLaunch}</b></span><span title={t("card.launchCount")}>{t("design.launches", { count: account.launchCount })}</span></div>
       <div className="actions">
         {inSandbox && onStopSandbox ? (
           <button
-            className="primary danger"
+            className="stop-sandbox"
             disabled={stopping}
             onClick={() => onStopSandbox(account.login)}
           >
@@ -300,12 +306,12 @@ export function AccountCard({
             {t("card.launchGame")}
           </button>
         )}
-        <button className="xs" onClick={() => onRepair(account.login)}>
-          {t("main.repair")}
-        </button>
-        <button className="xs danger ghost" onClick={() => onRemove(account.login)}>
-          {t("main.remove")}
-        </button>
+      </div>
+      <div className="card-bottom">
+        {has2fa ? <button className="card-confirmations" onClick={locked ? onManage : onConfirmations} title={locked ? t("auth.lockedHint") : confirmationError || t("design.checkConfirmations")}>
+          {t("auth.confirmations")} <b>{locked ? "—" : confirmationError ? "!" : confirmations?.length ?? "—"}</b><Icon name="arrow" size={11} />
+        </button> : <span className="dim">{t("auth.noAuthShort")}</span>}
+        <button className={`card-access${has2fa && needsLogin && !autoReady ? " warning" : ""}`} onClick={onManage} title={locked ? t("auth.lockedHint") : auth?.hasSavedPassword ? t(`auth.auto.${auth.autoLogin?.state ?? "unavailable"}`) : t("design.manageAccess")}>{accessLabel}</button>
       </div>
       {launching && (
         <div className="launch-fog" aria-hidden="true">

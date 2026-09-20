@@ -20,7 +20,7 @@ export function TitleBar() {
   return (
     <div className="titlebar">
       <div className="tb-drag" data-tauri-drag-region>
-        <span className="tb-logo" data-tauri-drag-region>▓ {t("app.name")}</span>
+        <span className="tb-logo" data-tauri-drag-region>{t("app.name")}</span>
         <span className="tb-sub" data-tauri-drag-region>{t("app.subtitle")}</span>
       </div>
       <button

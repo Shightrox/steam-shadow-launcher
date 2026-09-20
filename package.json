@@ -1,11 +1,12 @@
 {
   "name": "steam-shadow-launcher",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "node --test tests/frontend.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

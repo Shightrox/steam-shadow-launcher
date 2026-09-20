@@ -11,7 +11,7 @@
 //! Errors are logged and swallowed — a temporary network hiccup shouldn't
 //! kill the loop.
 
-use crate::sda::{confirmations, login as sda_login, relogin_flag, session_state, vault};
+use crate::sda::{confirmations, session, session_state, vault};
 use crate::{settings, workspace};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -68,11 +68,13 @@ fn tick_signal() -> &'static Mutex<Option<std::sync::mpsc::Sender<()>>> {
 }
 
 pub const EVENT_CONFIRMS: &str = "auth://confirmations-changed";
+pub const EVENT_ERROR: &str = "auth://confirmations-error";
 pub const EVENT_AUTO: &str = "auth://auto-confirmed";
 pub const EVENT_SESSION_STATE: &str = "auth://session-state";
 
 #[derive(Debug, Clone, Serialize)]
 struct ConfChanged {
+    workspace: String,
     login: String,
     count: usize,
     items: Vec<confirmations::Confirmation>,
@@ -80,20 +82,28 @@ struct ConfChanged {
 
 #[derive(Debug, Clone, Serialize)]
 struct AutoConfirmed {
+    workspace: String,
     login: String,
     ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct SessionStateChanged {
+    workspace: String,
     login: String,
     state: session_state::SessionState,
 }
 
-fn emit_state(app: &AppHandle, login: &str, state: session_state::SessionState) {
+fn emit_state(
+    app: &AppHandle,
+    ws: &std::path::Path,
+    login: &str,
+    state: session_state::SessionState,
+) {
     let _ = app.emit(
         EVENT_SESSION_STATE,
         SessionStateChanged {
+            workspace: ws.display().to_string(),
             login: login.to_string(),
             state,
         },
@@ -120,7 +130,7 @@ pub fn start(app: AppHandle) {
             };
             let interval = s.auth_poller_interval.max(15) as u64;
             if s.auth_poller_enabled {
-                run_once(&app, &s);
+                run_once(&app, &s, false);
             }
             // Wait with wakeup: if someone calls `poke` we rerun sooner.
             let _ = rx.recv_timeout(Duration::from_secs(interval));
@@ -135,8 +145,51 @@ pub fn poke() {
     }
 }
 
-fn run_once(app: &AppHandle, s: &settings::Settings) {
-    let Some(ws) = s.workspace.as_ref() else { return };
+#[derive(Debug, Clone, Serialize)]
+struct ConfirmationError {
+    workspace: String,
+    login: String,
+    message: String,
+}
+
+fn report_error(
+    app: &AppHandle,
+    ws: &std::path::Path,
+    login: &str,
+    error: &crate::error::AppError,
+) {
+    backoff_record_err(&format!("{}:{login}", ws.display()));
+    tracing::warn!("auth poller: {login}: {error}");
+    if let Ok(Some(mf)) = vault::load_plain(ws, login) {
+        emit_state(
+            app,
+            ws,
+            login,
+            session_state::classify(&mf, login, session_state::now_secs()),
+        );
+    }
+    let _ = app.emit(
+        EVENT_ERROR,
+        ConfirmationError {
+            workspace: ws.display().to_string(),
+            login: login.into(),
+            message: error.to_string(),
+        },
+    );
+}
+
+fn run_once(app: &AppHandle, s: &settings::Settings, manual: bool) {
+    let _workspace = crate::lifecycle::read();
+    if settings::load().ok().and_then(|s| s.workspace) != s.workspace {
+        return;
+    }
+    let Some(ws) = s.workspace.as_ref() else {
+        return;
+    };
+    if let Err(e) = vault::initialize(ws, s.auth_master_password_enabled) {
+        tracing::warn!("Vault unavailable: {e}");
+        return;
+    }
     let accounts = match workspace::list_accounts(ws) {
         Ok(a) => a,
         Err(e) => {
@@ -145,138 +198,146 @@ fn run_once(app: &AppHandle, s: &settings::Settings) {
         }
     };
     for a in accounts {
-        if !a.has_authenticator {
+        if !a.has_authenticator
+            || (!manual && backoff_should_skip(&format!("{}:{}", ws.display(), a.login)))
+        {
             continue;
         }
-        if backoff_should_skip(&a.login) {
-            continue;
-        }
-        let Ok(Some(mut mf)) = vault::load_plain(ws, &a.login) else {
-            continue;
+        let result = session::with_ready(ws, &a.login, |mf| confirmations::list(mf, &a.login));
+        let items = match result {
+            Ok(items) => items,
+            Err(error) => {
+                report_error(app, ws, &a.login, &error);
+                continue;
+            }
         };
-        // Skip half-enrolled accounts — the secrets are real but the server
-        // hasn't been told to trust them yet, so listing confirmations would
-        // 403 forever and just spam backoff.
-        if mf.fully_enrolled == Some(false) {
+        emit_state(app, ws, &a.login, session_state::SessionState::Ok);
+        let _ = app.emit(
+            EVENT_CONFIRMS,
+            ConfChanged {
+                workspace: ws.display().to_string(),
+                login: a.login.clone(),
+                count: items.len(),
+                items: items.clone(),
+            },
+        );
+        if items.is_empty() || (!s.auth_auto_confirm_trades && !s.auth_auto_confirm_market) {
+            backoff_record_ok(&format!("{}:{}", ws.display(), a.login));
             continue;
         }
-
-        // Classify session and either silently refresh, give up, or proceed.
-        let now = session_state::now_secs();
-        let st = session_state::classify(&mf, &a.login, now);
-        match st {
-            session_state::SessionState::Refreshable => {
-                let (refresh, sid) = mf
-                    .session
-                    .as_ref()
-                    .map(|s| (s.refresh_token.clone(), s.steam_id.to_string()))
-                    .unwrap_or_default();
-                match sda_login::refresh_access_token(&refresh, &sid) {
-                    Ok(new_tok) => {
-                        if let Some(s) = mf.session.as_mut() {
-                            s.access_token = new_tok;
-                        }
-                        if let Err(e) = vault::save_plain(ws, &a.login, &mf) {
-                            tracing::warn!(
-                                "auth poller: save refreshed mafile {}: {}",
-                                a.login,
-                                e
-                            );
-                        }
-                        relogin_flag::clear(&a.login);
-                        emit_state(app, &a.login, session_state::SessionState::Ok);
-                        tracing::info!("auth poller: silent-refreshed access for {}", a.login);
-                        // fall through to confirmations::list below
-                    }
-                    Err(e) => {
-                        tracing::warn!("auth poller: refresh failed for {}: {}", a.login, e);
-                        relogin_flag::mark(&a.login);
-                        emit_state(app, &a.login, session_state::SessionState::NeedsRelogin);
-                        continue;
-                    }
+        let result = session::with_ready(ws, &a.login, |mf| {
+            let mut auto_ids = Vec::new();
+            for item in &items {
+                if should_auto_confirm(mf, item, s)? {
+                    auto_ids.push(item.id.clone());
                 }
             }
-            session_state::SessionState::NeedsRelogin => {
-                emit_state(app, &a.login, session_state::SessionState::NeedsRelogin);
-                continue;
-            }
-            session_state::SessionState::NoSession => {
-                emit_state(app, &a.login, session_state::SessionState::NoSession);
-                continue;
-            }
-            session_state::SessionState::Ok => {
-                emit_state(app, &a.login, session_state::SessionState::Ok);
-            }
-        }
-
-        match confirmations::list(&mf, &a.login) {
-            Ok(items) => {
-                backoff_record_ok(&a.login);
-                let _ = app.emit(
-                    EVENT_CONFIRMS,
-                    ConfChanged {
-                        login: a.login.clone(),
-                        count: items.len(),
-                        items: items.clone(),
-                    },
-                );
-                // Handle auto-confirm for the enabled types.
-                let auto_ids: Vec<String> = items
-                    .iter()
-                    .filter(|c| should_auto_confirm(&mf, c, s))
-                    .map(|c| c.id.clone())
-                    .collect();
-                if !auto_ids.is_empty() {
-                    match confirmations::respond(&mf, &a.login, &auto_ids, confirmations::Op::Allow) {
-                        Ok(_) => {
-                            tracing::info!(
-                                "auth poller: auto-confirmed {} items for {}",
-                                auto_ids.len(),
-                                a.login
-                            );
-                            let _ = app.emit(
-                                EVENT_AUTO,
-                                AutoConfirmed {
-                                    login: a.login.clone(),
-                                    ids: auto_ids,
-                                },
-                            );
-                        }
-                        Err(e) => tracing::warn!(
-                            "auth poller: auto-confirm failed for {}: {}",
-                            a.login,
-                            e
-                        ),
-                    }
+            confirmations::respond(mf, &a.login, &auto_ids, confirmations::Op::Allow)
+        });
+        match result {
+            Ok(results) => {
+                let ids = successful_ids(&results);
+                if !ids.is_empty() {
+                    let remaining: Vec<_> = items
+                        .into_iter()
+                        .filter(|item| !ids.contains(&item.id))
+                        .collect();
+                    let _ = app.emit(
+                        EVENT_CONFIRMS,
+                        ConfChanged {
+                            workspace: ws.display().to_string(),
+                            login: a.login.clone(),
+                            count: remaining.len(),
+                            items: remaining,
+                        },
+                    );
+                    let _ = app.emit(
+                        EVENT_AUTO,
+                        AutoConfirmed {
+                            workspace: ws.display().to_string(),
+                            login: a.login.clone(),
+                            ids,
+                        },
+                    );
+                }
+                if let Some(failed) = results.iter().find(|r| !r.success) {
+                    report_error(
+                        app,
+                        ws,
+                        &a.login,
+                        &crate::error::AppError::Other(failed.message.clone()),
+                    );
+                } else {
+                    backoff_record_ok(&format!("{}:{}", ws.display(), a.login));
                 }
             }
-            Err(e) => {
-                backoff_record_err(&a.login);
-                let msg = e.to_string();
-                // "no session" / "needs relogin" aren't noisy warnings —
-                // the UI already shows those.
-                if !msg.contains("CONF_NEEDS_RELOGIN") && !msg.contains("CONF_NO_SESSION") {
-                    tracing::debug!("auth poller: list {}: {}", a.login, msg);
-                }
-            }
+            Err(error) => report_error(app, ws, &a.login, &error),
         }
     }
+}
+
+pub fn check_now(app: &AppHandle) -> crate::error::AppResult<()> {
+    let mut s = settings::load()?;
+    // A manual check fetches the list; it never grants automatic approval.
+    s.auth_auto_confirm_trades = false;
+    s.auth_auto_confirm_market = false;
+    run_once(app, &s, true);
+    Ok(())
+}
+
+fn successful_ids(results: &[confirmations::RespondResult]) -> Vec<String> {
+    results
+        .iter()
+        .filter(|r| r.success)
+        .map(|r| r.id.clone())
+        .collect()
 }
 
 fn should_auto_confirm(
     mf: &crate::sda::mafile::MaFile,
     c: &confirmations::Confirmation,
     s: &settings::Settings,
-) -> bool {
+) -> crate::error::AppResult<bool> {
     match c.kind {
-        // Trade offer: ONLY auto-confirm if it's one we initiated (creator ==
-        // our own steam_id). Incoming trades are never touched.
-        1 | 2 if s.auth_auto_confirm_trades => {
-            let our_sid = mf.session.as_ref().map(|s| s.steam_id).unwrap_or(0);
-            our_sid != 0 && c.creator_id == our_sid.to_string()
+        2 if s.auth_auto_confirm_trades => confirmations::is_outgoing_trade(mf, c),
+        3 if s.auth_auto_confirm_market => Ok(true),
+        _ => Ok(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_successful_confirmations_generate_success_events() {
+        let rows = vec![
+            confirmations::RespondResult {
+                id: "1".into(),
+                success: false,
+                message: "Denied".into(),
+            },
+            confirmations::RespondResult {
+                id: "2".into(),
+                success: true,
+                message: String::new(),
+            },
+        ];
+        assert_eq!(successful_ids(&rows), vec!["2"]);
+        assert!(successful_ids(&rows[..1]).is_empty());
+    }
+
+    #[test]
+    fn test_and_security_confirmations_are_never_automatic() {
+        let mut settings = settings::Settings::default();
+        settings.auth_auto_confirm_trades = true;
+        settings.auth_auto_confirm_market = true;
+        for kind in [1, 4, 5, 6, 9, 11, 99] {
+            let row: confirmations::Confirmation = serde_json::from_value(serde_json::json!({
+                "id":"1", "nonce":"2", "type":kind,
+            }))
+            .unwrap();
+            assert!(!should_auto_confirm(&Default::default(), &row, &settings).unwrap());
         }
-        // Market listing: confirm any — we only list items we own.
-        3 if s.auth_auto_confirm_market => true,
-        _ => false,
     }
 }

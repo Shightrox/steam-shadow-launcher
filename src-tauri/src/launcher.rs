@@ -91,18 +91,12 @@ fn launch_inner(
         }
         LaunchMode::Sandbox => {
             if !sandboxie.installed {
-                return Err(AppError::NotReady(
-                    "Sandboxie-Plus not installed".into(),
-                ));
+                return Err(AppError::NotReady("Sandboxie-Plus not installed".into()));
             }
             if !sandboxie::is_elevated_pub() {
                 return Err(AppError::NotReady("NEED_ADMIN".into()));
             }
             sandboxie::ensure_steam_client_service(main).ok();
-            let _ = switcher::backup_loginusers(workspace, main)?;
-            let _ = switcher::backup_registry(workspace)?;
-            switcher::patch_loginusers(main, &account.login)?;
-            switcher::write_autologin(&account.login)?;
             let pid = sandboxie::launch_in_box(sandboxie, main, &account.login)?;
             if let Some(id) = appid {
                 sandboxie::spawn_applaunch_in_box(sandboxie, main, &account.login, id);

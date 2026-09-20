@@ -1,3 +1,7 @@
+import { ConfirmationsSection } from "../components/ConfirmationsSection";
+import { Icon } from "../components/Icon";
+import { ContextMenu } from "../components/ContextMenu";
+import { useGuardCode, copyGuardCode } from "../state/guardCode";
 import { useEffect, useMemo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useApp } from "../state/store";
@@ -8,14 +12,14 @@ import { LoginFlowModal } from "../components/LoginFlowModal";
 import { AddAuthenticatorModal } from "../components/AddAuthenticatorModal";
 import { AddAccountModal } from "../components/AddAccountModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { ErrorBox } from "../components/ErrorBox";
 
-export function AuthenticatorView() {
+export function AuthenticatorView({ initialLogin }: { initialLogin?: string | null }) {
   const { t } = useI18n();
   const {
     accounts,
     authStatus,
     authLock,
-    codes,
     sessionStates,
     importMafile,
     exportMafile,
@@ -47,7 +51,9 @@ export function AuthenticatorView() {
     [withAuth, without],
   );
 
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialLogin ?? null);
+  useEffect(() => { if (initialLogin) setSelected(initialLogin); }, [initialLogin]);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const [importFor, setImportFor] = useState<string | null>(null);
   const [importPath, setImportPath] = useState("");
   const [importJson, setImportJson] = useState("");
@@ -62,7 +68,7 @@ export function AuthenticatorView() {
   const [removeAuthBusy, setRemoveAuthBusy] = useState(false);
   const [refreshBusy, setRefreshBusy] = useState(false);
 
-  const locked = !!authLock?.enabled && !authLock.unlocked && !!authLock.hasEncryptedFiles;
+  const locked = !!authLock?.enabled && !authLock.unlocked;
 
   // Keep a sane selection — pick from the unified list so accounts without
   // an authenticator can also be selected (so the user can attach one).
@@ -74,34 +80,9 @@ export function AuthenticatorView() {
     if (!allRail.length && selected) setSelected(null);
   }, [allRail, selected]);
 
-  // Pump the countdown every second locally (server-time is cached in Rust).
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    const iv = setInterval(() => setTick((x) => x + 1), 1000);
-    return () => clearInterval(iv);
-  }, []);
-
-  // If the code in store has run down, fetch a fresh one.
-  useEffect(() => {
-    if (!selected) return;
-    refreshSessionState(selected);
-    const c = codes[selected];
-    if (!c) {
-      refreshCode(selected);
-    } else if (c.periodRemaining <= 1) {
-      const tm = setTimeout(() => refreshCode(selected), 500);
-      return () => clearTimeout(tm);
-    }
-    return undefined;
-  }, [selected, codes, tick]);
-
-  const active = selected
-    ? accounts.find((a) => a.login === selected) ?? null
-    : null;
-  const code = active ? codes[active.login] : undefined;
-  const remaining = code
-    ? Math.max(0, code.periodRemaining - Math.floor((Date.now() / 1000) - code.generatedAt))
-    : 0;
+  const { code, remaining } = useGuardCode(withAuth.some(a => a.login === selected) ? selected : null);
+  useEffect(() => { if (selected) void refreshSessionState(selected); }, [selected]);
+  const active = selected ? accounts.find((a) => a.login === selected) ?? null : null;
 
   const doImport = async () => {
     if (!importFor) return;
@@ -218,7 +199,7 @@ export function AuthenticatorView() {
               onChange={(e) => setUnlockPw(e.target.value)}
               placeholder={t("auth.security.unlockPwPh")}
               onKeyDown={async (e) => {
-                if (e.key === "Enter" && unlockPw) {
+                if (e.key === "Enter" && unlockPw && !unlockBusy) {
                   setUnlockBusy(true);
                   try {
                     await unlockAuth(unlockPw);
@@ -248,9 +229,9 @@ export function AuthenticatorView() {
           </div>
         </div>
       )}
-      <div className="auth-head">
+      {!locked && <><div className="auth-head">
         <div>
-          <div className="auth-title">{t("auth.title")}</div>
+          <h1 className="auth-title">{t("auth.title")}</h1>
           <div className="auth-subtitle">{t("auth.subtitle")}</div>
         </div>
         <div className="auth-head-actions">
@@ -312,6 +293,13 @@ export function AuthenticatorView() {
             ))}
           </div>
           <div className="auth-panel">
+            {active && authStatus[active.login]?.identityMismatch && <ErrorBox message={t("error.AUTH_ACCOUNT_MISMATCH")} />}
+            {active && authStatus[active.login]?.enrollment && authStatus[active.login].enrollment !== "none" && (
+              <div className="recovery-banner">
+                <span>{t("auth.add.resumeHint")}</span>
+                <button className="primary" onClick={() => setAddFor(active.login)}>{t("auth.add.resume")}</button>
+              </div>
+            )}
             {active && withAuth.find((a) => a.login === active.login) && (
               <div className="auth-stack">
                 <div className={`auth-codebar${remaining <= 5 ? " pulse" : ""}`}>
@@ -333,57 +321,20 @@ export function AuthenticatorView() {
                       onClick={async () => {
                         if (!code) return;
                         try {
-                          await navigator.clipboard.writeText(code.code);
+                          await copyGuardCode(active.login);
                           toast("success", t("auth.copied"));
                         } catch (e: any) {
                           toast("error", String(e));
                         }
                       }}
                     >
-                      ⎘
+                      <Icon name="copy" />
                     </button>
-                    <button
-                      className="xs"
-                      disabled={busy}
-                      onClick={async () => {
-                        try {
-                          await api.authOpenFolder(active.login);
-                        } catch (e: any) {
-                          toast("error", String(e));
-                        }
-                      }}
-                      title={t("auth.openFolderHint")}
-                    >
-                      ⛶
-                    </button>
-                    <button
-                      className="xs"
-                      disabled={busy}
-                      onClick={() => setLoginFor(active.login)}
-                      title={t("auth.login.openInCard")}
-                    >
-                      ⎙
-                    </button>
-                    <button
-                      className="xs"
-                      disabled={busy}
-                      onClick={doExport}
-                      title={t("auth.export")}
-                    >
-                      ↑
-                    </button>
-                    <button
-                      className="xs danger ghost"
-                      disabled={busy}
-                      onClick={doRemove}
-                      title={t("auth.remove")}
-                    >
-                      ×
-                    </button>
+                    <button className="xs icon-button" disabled={busy} aria-label={t("design.more")} onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setMenu({ x: r.left, y: r.bottom + 4 }); }}><Icon name="more" /></button>
                   </div>
                 </div>
                 <div className="auth-codebar-meta">
-                  <span>{t("auth.accountName")}: {active.login}</span>
+                  <span>{t("auth.accountName")}: {authStatus[active.login]?.accountName ?? active.login} · {authStatus[active.login]?.steamId ?? active.steamId ?? "?"}</span>
                   {active.authenticatorImportedAt && (
                     <span>
                       {" · "}
@@ -397,7 +348,8 @@ export function AuthenticatorView() {
                 {(() => {
                   const st = sessionStates[active.login] ?? "ok";
                   if (st === "ok") return null;
-                  const refreshable = st === "refreshable";
+                  const auto = authStatus[active.login]?.autoLogin?.state;
+                  const refreshable = st === "refreshable" || auto === "ready";
                   return (
                     <div className={`auth-session-badge ${st}`}>
                       <span className="auth-session-badge-icon">
@@ -406,12 +358,12 @@ export function AuthenticatorView() {
                       <div className="auth-session-badge-text">
                         <div className="auth-session-badge-title">
                           {refreshable
-                            ? t("auth.session.staleTitle")
+                            ? t("auth.session.recoverTitle")
                             : t("auth.session.expiredTitle")}
                         </div>
                         <div className="auth-session-badge-hint">
                           {refreshable
-                            ? t("auth.session.staleHint")
+                            ? t("auth.session.recoverHint")
                             : t("auth.session.expiredHint")}
                         </div>
                       </div>
@@ -446,7 +398,17 @@ export function AuthenticatorView() {
                     </div>
                   );
                 })()}
-                <ConfirmationsSection login={active.login} />
+                <ConfirmationsSection key={active.login} login={active.login} />
+                {authStatus[active.login]?.hasSavedPassword && (
+                  <div className="auth-codebar-meta">
+                    <span>{t(`auth.auto.${authStatus[active.login]?.autoLogin?.state ?? "unavailable"}`)}
+                    {authStatus[active.login]?.autoLogin?.retry_at ? ` ${new Date(authStatus[active.login].autoLogin.retry_at! * 1000).toLocaleTimeString()}` : ""}</span>
+                    <button className="xs ghost" onClick={async () => {
+                      try { await api.authPasswordForget(active.login); await refreshAuthStatus(); }
+                      catch (e) { toast("error", String(e)); }
+                    }}>{t("auth.login.forgetPassword")}</button>
+                  </div>
+                )}
               </div>
             )}
             {active && !withAuth.find((a) => a.login === active.login) && (
@@ -542,6 +504,13 @@ export function AuthenticatorView() {
           </div>
         </div>
       )}
+      {menu && active && <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} items={[
+        { label: t("auth.login.openInCard"), onClick: () => setLoginFor(active.login) },
+        { label: t("auth.openFolderHint"), onClick: () => { void api.authOpenFolder(active.login).catch(e => toast("error", String(e))); } },
+        { label: t("auth.export"), onClick: () => { void doExport(); } },
+        { divider: true },
+        { label: t("auth.remove"), danger: true, onClick: doRemove },
+      ]} />}
       {loginFor && (
         <LoginFlowModal
           open={true}
@@ -550,13 +519,14 @@ export function AuthenticatorView() {
             accounts.find((a) => a.login === loginFor)?.login ?? loginFor
           }
           onClose={() => setLoginFor(null)}
+          onSuccess={() => void refreshConfirmations(loginFor)}
         />
       )}
       {addFor && (
         <AddAuthenticatorModal
           open={true}
           login={addFor}
-          onClose={() => setAddFor(null)}
+          onClose={() => { setAddFor(null); void refreshAuthStatus(); }}
         />
       )}
       <AddAccountModal
@@ -586,152 +556,7 @@ export function AuthenticatorView() {
         onCancel={() => !removeAuthBusy && setRemoveAuthFor(null)}
         onConfirm={confirmRemoveAuth}
       />
-    </div>
-  );
-}
-
-function typeLabel(t: (k: string) => string, kind: number): string {
-  switch (kind) {
-    case 1:
-    case 2:
-      return t("auth.typeTrade");
-    case 3:
-      return t("auth.typeMarket");
-    case 6:
-      return t("auth.typePhone");
-    case 8:
-      return t("auth.typeAccountRecovery");
-    case 9:
-      return t("auth.typeLogin");
-    default:
-      return t("auth.typeOther");
-  }
-}
-
-function typeIcon(kind: number): string {
-  switch (kind) {
-    case 1:
-    case 2:
-      return "⇄";
-    case 3:
-      return "$";
-    case 6:
-      return "☎";
-    case 8:
-      return "⚷";
-    case 9:
-      return "⌨";
-    default:
-      return "?";
-  }
-}
-
-function ConfirmationsSection({ login }: { login: string }) {
-  const { t } = useI18n();
-  const confirmations = useApp((s) => s.confirmations[login]);
-  const loading = useApp((s) => !!s.confLoading[login]);
-  const refreshConfirmations = useApp((s) => s.refreshConfirmations);
-  const respondConfirmations = useApp((s) => s.respondConfirmations);
-  const [selection, setSelection] = useState<Record<string, boolean>>({});
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    refreshConfirmations(login);
-    setSelection({});
-  }, [login]);
-
-  const list = confirmations ?? [];
-  const selectedIds = Object.entries(selection)
-    .filter(([, v]) => v)
-    .map(([id]) => id);
-  const anySelected = selectedIds.length > 0;
-
-  const doRespond = async (op: "allow" | "reject") => {
-    const ids = anySelected ? selectedIds : list.map((c) => c.id);
-    if (!ids.length) return;
-    setBusy(true);
-    try {
-      await respondConfirmations(login, ids, op);
-      setSelection({});
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="auth-conf">
-      <div className="auth-conf-head">
-        <div className="auth-conf-title">
-          {t("auth.confirmations")}
-          {list.length > 0 && (
-            <span className="auth-conf-count">{list.length}</span>
-          )}
-        </div>
-        <button
-          className="xs"
-          disabled={loading}
-          onClick={() => refreshConfirmations(login)}
-        >
-          {loading ? <Spinner size="xs" inline /> : "⟳"}
-        </button>
-      </div>
-      {list.length === 0 ? (
-        <div className="auth-conf-empty">
-          {loading ? <Spinner size="sm" /> : t("auth.confirmations.empty")}
-        </div>
-      ) : (
-        <>
-          <div className="auth-conf-list">
-            {list.map((c) => {
-              const checked = !!selection[c.id];
-              return (
-                <label
-                  key={c.id}
-                  className={`auth-conf-row${checked ? " checked" : ""}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={(e) =>
-                      setSelection((sel) => ({ ...sel, [c.id]: e.target.checked }))
-                    }
-                  />
-                  <span className="auth-conf-icon">{typeIcon(c.type)}</span>
-                  <div className="auth-conf-meta">
-                    <div className="auth-conf-headline">{c.headline}</div>
-                    {c.summary?.length > 0 && (
-                      <div className="auth-conf-summary">
-                        {c.summary.join(" · ")}
-                      </div>
-                    )}
-                    <div className="auth-conf-type">
-                      {typeLabel(t, c.type)}
-                    </div>
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-          <div className="auth-conf-actions">
-            <button
-              className="primary"
-              disabled={busy}
-              onClick={() => doRespond("allow")}
-              title={anySelected ? t("auth.allowSelected") : t("auth.allowAll")}
-            >
-              ✓ {anySelected ? t("auth.allowSelected") : t("auth.allowAll")}
-            </button>
-            <button
-              className="xs danger ghost"
-              disabled={busy}
-              onClick={() => doRespond("reject")}
-              title={anySelected ? t("auth.rejectSelected") : t("auth.rejectAll")}
-            >
-              ✕ {anySelected ? t("auth.rejectSelected") : t("auth.rejectAll")}
-            </button>
-          </div>
-        </>
-      )}
+      </>}
     </div>
   );
 }

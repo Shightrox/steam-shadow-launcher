@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { api, type InstalledGame, type LaunchMode } from "../api/tauri";
+import { api, type InstalledGame } from "../api/tauri";
 import { useI18n } from "../i18n";
 
 interface Props {
   open: boolean;
   login: string | null;
-  defaultMode: LaunchMode;
+  onLaunch(login: string, appid: number): Promise<void>;
   onClose(): void;
   onLaunched?(): void;
 }
 
-export function GamePickerModal({ open, login, defaultMode, onClose, onLaunched }: Props) {
+export function GamePickerModal({ open, login, onLaunch, onClose, onLaunched }: Props) {
   const { t } = useI18n();
   const [games, setGames] = useState<InstalledGame[]>([]);
   const [loading, setLoading] = useState(false);
@@ -21,14 +21,17 @@ export function GamePickerModal({ open, login, defaultMode, onClose, onLaunched 
 
   useEffect(() => {
     if (!open || !login) return;
+    let alive = true;
+    setGames([]);
     setLoading(true);
     setErr(null);
     setQ("");
     api
       .listAccountGames(login)
-      .then((g) => setGames(g))
-      .catch((e) => setErr(String(e)))
-      .finally(() => setLoading(false));
+      .then((g) => { if (alive) setGames(g); })
+      .catch((e) => { if (alive) setErr(String(e)); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
   }, [open, login]);
 
   const filtered = useMemo(() => {
@@ -45,18 +48,18 @@ export function GamePickerModal({ open, login, defaultMode, onClose, onLaunched 
     if (!login) return;
     setBusyId(g.appid);
     try {
-      await api.launchGame(login, g.appid, defaultMode);
+      await onLaunch(login, g.appid);
       onLaunched?.();
       onClose();
     } catch (e: any) {
-      alert(String(e));
+      setErr(String(e));
     } finally {
       setBusyId(null);
     }
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={() => busyId === null && onClose()}>
       <div
         className="modal"
         onClick={(e) => e.stopPropagation()}
@@ -82,7 +85,7 @@ export function GamePickerModal({ open, login, defaultMode, onClose, onLaunched 
               key={g.appid}
               className="game-tile"
               onClick={() => launch(g)}
-              disabled={busyId === g.appid}
+              disabled={busyId !== null}
               title={`${g.name} · ${g.appid}`}
             >
               <div className="game-cover">

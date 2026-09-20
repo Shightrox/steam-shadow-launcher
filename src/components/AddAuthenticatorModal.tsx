@@ -14,6 +14,7 @@ import { LoginFlowModal } from "./LoginFlowModal";
 ///   blocker-mobile  — already has a mobile authenticator → must revoke first
 ///   phone..persist  — actual flow steps
 type Phase =
+  | "resume"
   | "login"
   | "diagnose"
   | "diag-panel"
@@ -40,14 +41,12 @@ export function AddAuthenticatorModal({ open, login, onClose, onSuccess }: Props
   const { t } = useI18n();
   const { refreshAuthStatus, refreshAccounts, refreshCode, toast, setAddAuthActive } = useApp();
 
-  const [phase, setPhase] = useState<Phase>("login");
-  const [loginDone, setLoginDone] = useState(false);
+  const [phase, setPhase] = useState<Phase>("resume");
   const [phoneNumber, setPhoneNumber] = useState("");
   const [countryCode, setCountryCode] = useState("RU");
   const [phoneAttached, setPhoneAttached] = useState(false);
   const [sms1, setSms1] = useState("");
   const [sms2, setSms2] = useState("");
-  const [tryNumber, setTryNumber] = useState(1);
   const [createRes, setCreateRes] = useState<AddCreatePublic | null>(null);
   const [diag, setDiag] = useState<AddDiagnostic | null>(null);
   const [revocation, setRevocation] = useState<string | null>(null);
@@ -56,23 +55,40 @@ export function AddAuthenticatorModal({ open, login, onClose, onSuccess }: Props
   const [busy, setBusy] = useState(false);
   const emailPoll = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const flowGeneration = useRef(0);
+  const finalizeRunning = useRef(false);
+
+  const resume = async () => {
+    const generation = flowGeneration.current;
+    setError(null); setBusy(true);
+    try {
+      const r = await api.authAddResume(login);
+      if (generation !== flowGeneration.current) return;
+      if (r.phase === "revocation") { setRevocation(r.revocation_code); setPhase("revocation"); }
+      else if (r.phase === "finalize") { setCreateRes({ phone_number_hint: r.phone_hint } as AddCreatePublic); setPhase("finalize"); }
+      else setPhase("login");
+    } catch (e) { if (generation === flowGeneration.current) setError(String(e)); }
+    finally { if (generation === flowGeneration.current) setBusy(false); }
+  };
+
   useEffect(() => {
     if (!open) return;
-    setPhase("login");
-    setLoginDone(false);
+    flowGeneration.current++;
+    setPhase("resume");
     setPhoneNumber("");
     setCountryCode("RU");
     setPhoneAttached(false);
     setSms1("");
     setSms2("");
-    setTryNumber(1);
     setCreateRes(null);
     setDiag(null);
     setRevocation(null);
     setConfirmedWritten(false);
     setError(null);
     setBusy(false);
-  }, [open]);
+    void resume();
+    return () => { flowGeneration.current++; if (emailPoll.current) clearInterval(emailPoll.current); };
+  }, [open, login]);
 
   // Expose a globally-visible "wizard is mounted" flag so the title bar can
   // prompt-to-confirm before the window is killed mid-flow.
@@ -96,9 +112,11 @@ export function AddAuthenticatorModal({ open, login, onClose, onSuccess }: Props
     }
     try {
       await api.authAddCancel(login);
-    } catch {
-      /* ignore */
+    } catch (e) {
+      setError(String(e));
+      return;
     }
+    flowGeneration.current++;
     onClose();
   };
 
@@ -134,15 +152,8 @@ export function AddAuthenticatorModal({ open, login, onClose, onSuccess }: Props
         open={true}
         login={login}
         defaultAccountName={login}
-        onClose={() => {
-          if (loginDone) {
-            setPhase("diagnose");
-            doDiagnose();
-          } else {
-            onClose();
-          }
-        }}
-        onSuccess={() => setLoginDone(true)}
+        onClose={onClose}
+        onSuccess={() => { setPhase("diagnose"); void doDiagnose(); }}
       />
     );
   }
@@ -169,10 +180,15 @@ export function AddAuthenticatorModal({ open, login, onClose, onSuccess }: Props
   };
 
   const startEmailPoll = () => {
+    const generation = flowGeneration.current;
+    let polling = false;
     if (emailPoll.current) clearInterval(emailPoll.current);
     const tick = async () => {
+      if (polling || generation !== flowGeneration.current) return;
+      polling = true;
       try {
         const s = await api.authAddCheckEmail(login);
+        if (generation !== flowGeneration.current) return;
         if (!s.awaiting_email) {
           if (emailPoll.current) clearInterval(emailPoll.current);
           emailPoll.current = null;
@@ -182,8 +198,8 @@ export function AddAuthenticatorModal({ open, login, onClose, onSuccess }: Props
       } catch (e: any) {
         if (emailPoll.current) clearInterval(emailPoll.current);
         emailPoll.current = null;
-        setError(String(e));
-      }
+        if (generation === flowGeneration.current) setError(String(e));
+      } finally { polling = false; }
     };
     emailPoll.current = setInterval(tick, 5000);
     tick();
@@ -248,34 +264,24 @@ export function AddAuthenticatorModal({ open, login, onClose, onSuccess }: Props
   };
 
   const doFinalize = async (validateSms: boolean = true) => {
-    setBusy(true);
-    setError(null);
+    if (finalizeRunning.current) return;
+    finalizeRunning.current = true;
+    const generation = flowGeneration.current;
+    setBusy(true); setError(null);
     try {
-      const r = await api.authAddFinalize(
-        login,
-        validateSms ? sms2.trim() : "",
-        tryNumber,
-        validateSms,
-      );
-      if (r.success && r.revocation_code) {
-        setRevocation(r.revocation_code);
-        setPhase("revocation");
-      } else if (r.want_more) {
-        // Server clock drift — increment try_number and retry w/ SAME code.
-        setTryNumber((n) => n + 1);
-        setTimeout(() => doFinalize(validateSms), 500);
-      } else if (!validateSms) {
-        // No-phone attempt rejected — hint to use SMS instead.
-        setError(t("auth.add.noPhoneRejected"));
-      } else {
-        // status 89 = SMS mismatch, status 88 = rate-limit.
-        setError(t("auth.add.finalizeBadSms", { status: r.status }));
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        if (generation !== flowGeneration.current) return;
+        const r = await api.authAddFinalize(login, validateSms ? sms2.trim() : "", attempt, validateSms);
+        if (generation !== flowGeneration.current) return;
+        if (r.success && r.revocation_code) {
+          setRevocation(r.revocation_code); setPhase("revocation"); return;
+        }
+        if (!r.want_more) { setError(t("auth.add.finalizeBadSms", { status: r.status })); return; }
+        if (attempt < 5) await new Promise<void>(resolve => setTimeout(resolve, 500));
       }
-    } catch (e: any) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
+      setError(t("auth.add.retryLimit"));
+    } catch (e) { if (generation === flowGeneration.current) setError(String(e)); }
+    finally { finalizeRunning.current = false; if (generation === flowGeneration.current) setBusy(false); }
   };
 
   const doPersist = async () => {
@@ -299,7 +305,7 @@ export function AddAuthenticatorModal({ open, login, onClose, onSuccess }: Props
   };
 
   return (
-    <div className="modal-backdrop" onClick={() => !busy && abort()}>
+    <div className="modal-backdrop" onClick={() => !busy && !["create", "finalize", "revocation", "persist"].includes(phase) && abort()}>
       <div
         className="modal"
         onClick={(e) => e.stopPropagation()}
@@ -309,6 +315,7 @@ export function AddAuthenticatorModal({ open, login, onClose, onSuccess }: Props
           {t("auth.add.title")} → {login}
         </div>
         <div className="modal-body">
+          {phase === "resume" && (<><div className="hint">{t("auth.add.resuming")}</div>{error && <ErrorBox message={error} />}<div className="modal-actions"><button onClick={onClose} disabled={busy}>{t("common.close")}</button><button onClick={resume} disabled={busy}>{t("common.refresh")}</button></div></>)}
           {phase === "diagnose" && (
             <div className="auth-loading">
               <Spinner size="md" />

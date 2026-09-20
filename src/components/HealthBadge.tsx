@@ -1,10 +1,10 @@
 import type { AccountHealth } from "../api/tauri";
 import { useI18n } from "../i18n";
 
-export function HealthBadge({ health }: { health?: AccountHealth }) {
+export function HealthBadge({ health, compact = false }: { health?: AccountHealth; compact?: boolean }) {
   const { t } = useI18n();
   if (!health) return <span className="badge">...</span>;
-  if (health.ready) return <span className="badge ok">{t("health.ready")}</span>;
+  if (health.ready) return <span className="badge ok" title={t("health.ready")}>{t(compact ? "design.readyShort" : "health.ready")}</span>;
   const k = health.junction.kind;
   if (k === "missing") return <span className="badge warn">{t("health.junctionMissing")}</span>;
   if (k === "stale") return <span className="badge warn">{t("health.junctionStale")}</span>;

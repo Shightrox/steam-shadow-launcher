@@ -17,7 +17,9 @@ export function SwitchWarnDialog({ open, login, onClose, onConfirmed }: Props) {
 
   useEffect(() => {
     if (!open) return;
-    api.listRunningGames().then((g) => setGame(g[0] || null));
+    let alive = true;
+    api.listRunningGames().then((g) => { if (alive) setGame(g[0] || null); }).catch(e => useApp.getState().toast("error", String(e)));
+    return () => { alive = false; };
   }, [open]);
 
   if (!open || !login) return null;
@@ -29,14 +31,14 @@ export function SwitchWarnDialog({ open, login, onClose, onConfirmed }: Props) {
       onClose();
     } catch (e: any) {
       useApp.getState().log("error", String(e));
-      alert(String(e));
+      useApp.getState().toast("error", String(e));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={() => !busy && onClose()}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h2>{t("switchWarn.title")}</h2>
         <p style={{ color: "var(--fg)", fontSize: 11 }}>

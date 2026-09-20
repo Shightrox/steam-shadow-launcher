@@ -16,51 +16,90 @@ use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
 
-fn require_workspace(s: &Settings) -> AppResult<PathBuf> {
-    s.workspace
+fn require_workspace(
+    s: &Settings,
+    expected: Option<&std::path::Path>,
+) -> AppResult<crate::lifecycle::Workspace> {
+    let ws = s
+        .workspace
         .clone()
-        .ok_or_else(|| AppError::Workspace("workspace not configured".into()))
+        .ok_or_else(|| AppError::Workspace("workspace not configured".into()))?;
+    let ws = crate::lifecycle::Workspace::new(ws);
+    if let Some(expected) = expected {
+        if crate::storage::path_key(expected)? != crate::storage::path_key(&ws)? {
+            return Err(AppError::Workspace("WORKSPACE_CHANGED".into()));
+        }
+    }
+    if settings::load()?.workspace.as_ref() != Some(&*ws) {
+        return Err(AppError::Workspace("WORKSPACE_CHANGED".into()));
+    }
+    sda::vault::initialize(&ws, s.auth_master_password_enabled)?;
+    Ok(ws)
 }
 
 fn require_main(s: &Settings) -> AppResult<MainSteamInfo> {
     steam_paths::detect(s.main_steam_path_override.clone())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn detect_main_steam() -> AppResult<MainSteamInfo> {
     let s = settings::load()?;
     steam_paths::detect(s.main_steam_path_override)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_settings() -> AppResult<Settings> {
-    settings::load()
+    let mut s = settings::load()?;
+    if let Some(ws) = &s.workspace {
+        s.auth_master_password_enabled =
+            sda::vault::initialize(ws, s.auth_master_password_enabled)?;
+    }
+    Ok(s)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_settings(settings: Settings) -> AppResult<()> {
-    settings::save(&settings)
+    settings::update(|current| {
+        current.language = if settings.language == "en" {
+            "en".into()
+        } else {
+            "ru".into()
+        };
+        current.default_launch_mode = settings.default_launch_mode;
+    })
 }
 
-#[tauri::command]
-pub fn list_accounts() -> AppResult<Vec<Account>> {
+#[tauri::command(async)]
+pub fn list_accounts(expected_workspace: Option<PathBuf>) -> AppResult<Vec<Account>> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     workspace::list_accounts(&ws)
 }
 
-#[tauri::command]
-pub fn add_account(login: String, display: Option<String>) -> AppResult<Account> {
+#[tauri::command(async)]
+pub fn add_account(
+    login: String,
+    display: Option<String>,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<Account> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let main = require_main(&s)?;
     workspace::add_account(&ws, &main.steamapps_dir, &login, display)
 }
 
-#[tauri::command]
-pub fn remove_account(login: String, delete_files: bool) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn remove_account(
+    login: String,
+    delete_files: bool,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<()> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
+    sda::reauth::forget(&ws, &login)?;
+    sda::add::drop_session(&login);
     // also try to remove sandbox box
     let sb = sandboxie::detect();
     if sb.installed {
@@ -69,19 +108,22 @@ pub fn remove_account(login: String, delete_files: bool) -> AppResult<()> {
     workspace::remove_account(&ws, &login, delete_files)
 }
 
-#[tauri::command]
-pub fn verify_account(login: String) -> AppResult<AccountHealth> {
+#[tauri::command(async)]
+pub fn verify_account(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<AccountHealth> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let main = require_main(&s)?;
-    let dir = workspace::account_dir(&ws, &login);
+    let dir = workspace::checked_account_dir(&ws, &login)?;
     vdf::is_account_ready(&dir, &main.steamapps_dir)
 }
 
-#[tauri::command]
-pub fn repair_account(login: String) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn repair_account(login: String, expected_workspace: Option<PathBuf>) -> AppResult<()> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let main = require_main(&s)?;
     let dir = workspace::ensure_account_dirs(&ws, &login)?;
     let link = dir.join("steamapps");
@@ -89,10 +131,14 @@ pub fn repair_account(login: String) -> AppResult<()> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn launch_shadow(login: String, mode: Option<String>) -> AppResult<LaunchOutcome> {
+#[tauri::command(async)]
+pub fn launch_shadow(
+    login: String,
+    mode: Option<String>,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<LaunchOutcome> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let main = require_main(&s)?;
     let sb = sandboxie::detect();
     let accounts = workspace::list_accounts(&ws)?;
@@ -107,8 +153,9 @@ pub fn launch_shadow(login: String, mode: Option<String>) -> AppResult<LaunchOut
     Ok(outcome)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn change_workspace(new_path: PathBuf, strategy: String) -> AppResult<()> {
+    let _exclusive = crate::lifecycle::write();
     let mut s = settings::load()?;
     let main = require_main(&s)?;
     workspace::validate_workspace(&new_path, &main.install_dir)?;
@@ -119,17 +166,35 @@ pub fn change_workspace(new_path: PathBuf, strategy: String) -> AppResult<()> {
         _ => return Err(AppError::Workspace("unknown strategy".into())),
     };
     if let Some(old) = s.workspace.clone() {
+        sda::vault::initialize(&old, s.auth_master_password_enabled)?;
         if old != new_path {
             workspace::change_workspace(&old, &new_path, strat, &main.steamapps_dir)?;
         }
     }
-    s.workspace = Some(new_path);
-    settings::save(&s)?;
+    let old = s.workspace.clone();
+    s.auth_master_password_enabled = sda::vault::initialize(&new_path, false)?;
+    s.workspace = Some(new_path.clone());
+    settings::update(|current| {
+        current.workspace = s.workspace;
+        current.auth_master_password_enabled = s.auth_master_password_enabled;
+    })?;
+    sda::vault::lock();
+    sda::add::clear_sessions();
+    sda::reauth::clear_pending();
+    sda::relogin_flag::clear_all();
+    if matches!(strat, ChangeStrategy::Move) {
+        if let Some(old) = old.filter(|old| old != &new_path) {
+            if let Err(e) = workspace::finish_move(&old, &new_path) {
+                tracing::warn!("Source archive deferred: {e}");
+            }
+        }
+    }
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_workspace_initial(new_path: PathBuf) -> AppResult<()> {
+    let _exclusive = crate::lifecycle::write();
     let mut s = settings::load()?;
     let main = require_main(&s)?;
     workspace::validate_workspace(&new_path, &main.install_dir)?;
@@ -138,35 +203,34 @@ pub fn set_workspace_initial(new_path: PathBuf) -> AppResult<()> {
     settings::save(&s)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_main_steam_override(new_path: Option<PathBuf>) -> AppResult<()> {
-    let mut s = settings::load()?;
-    s.main_steam_path_override = new_path;
-    settings::save(&s)
+    settings::update(|s| s.main_steam_path_override = new_path)
 }
 
-#[tauri::command]
-pub fn cleanup_stale_junctions() -> AppResult<CleanupReport> {
+#[tauri::command(async)]
+pub fn cleanup_stale_junctions(expected_workspace: Option<PathBuf>) -> AppResult<CleanupReport> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let main = require_main(&s)?;
     junction::cleanup_stale(&ws, &main.steamapps_dir)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn discover_steam_accounts() -> AppResult<Vec<DiscoveredAccount>> {
     let s = settings::load()?;
     let main = require_main(&s)?;
     vdf::parse_loginusers(&main.install_dir)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn import_discovered_accounts(
     logins: Vec<String>,
     personas: std::collections::HashMap<String, String>,
+    expected_workspace: Option<PathBuf>,
 ) -> AppResult<Vec<Account>> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let main = require_main(&s)?;
     let mut out = Vec::new();
     for login in logins {
@@ -177,17 +241,17 @@ pub fn import_discovered_accounts(
     Ok(out)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn default_workspace() -> AppResult<Option<PathBuf>> {
     Ok(settings::default_workspace_path())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn detect_sandboxie() -> AppResult<SandboxieInfo> {
     Ok(sandboxie::detect())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn install_sandboxie(installer_path: PathBuf) -> AppResult<SandboxieInfo> {
     sandboxie::install_silent(&installer_path)?;
     let mut s = settings::load()?;
@@ -205,11 +269,29 @@ struct ProgressEvent {
     name: Option<String>,
 }
 
-fn emit_progress(app: &AppHandle, phase: &'static str, downloaded: u64, total: Option<u64>, name: Option<String>) {
-    let percent = total.map(|t| if t == 0 { 0 } else { ((downloaded * 100) / t).min(100) as u32 });
+fn emit_progress(
+    app: &AppHandle,
+    phase: &'static str,
+    downloaded: u64,
+    total: Option<u64>,
+    name: Option<String>,
+) {
+    let percent = total.map(|t| {
+        if t == 0 {
+            0
+        } else {
+            ((downloaded * 100) / t).min(100) as u32
+        }
+    });
     let _ = app.emit(
         "sandboxie-download-progress",
-        ProgressEvent { phase, downloaded, total, percent, name },
+        ProgressEvent {
+            phase,
+            downloaded,
+            total,
+            percent,
+            name,
+        },
     );
 }
 
@@ -244,22 +326,22 @@ pub async fn download_and_install_sandboxie(app: AppHandle) -> AppResult<Sandbox
     .map_err(|e| AppError::Other(format!("join: {e}")))?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_running_games() -> AppResult<Vec<RunningGame>> {
     let s = settings::load()?;
     let main = require_main(&s)?;
     Ok(steam_process::find_running_games(&main.steamapps_dir))
 }
 
-#[tauri::command]
-pub fn revert_last_switch() -> AppResult<()> {
+#[tauri::command(async)]
+pub fn revert_last_switch(expected_workspace: Option<PathBuf>) -> AppResult<()> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let main = require_main(&s)?;
     switcher::revert_last(&ws, &main)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn close_window(app: tauri::AppHandle) -> AppResult<()> {
     use tauri::Manager;
     if let Some(w) = app.get_webview_window("main") {
@@ -299,7 +381,7 @@ pub async fn apply_update(app: tauri::AppHandle, url: String) -> AppResult<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn minimize_window(app: tauri::AppHandle) -> AppResult<()> {
     use tauri::Manager;
     if let Some(w) = app.get_webview_window("main") {
@@ -309,7 +391,7 @@ pub fn minimize_window(app: tauri::AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_drag(app: tauri::AppHandle) -> AppResult<()> {
     use tauri::Manager;
     if let Some(w) = app.get_webview_window("main") {
@@ -319,12 +401,12 @@ pub fn start_drag(app: tauri::AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn is_elevated() -> AppResult<bool> {
     Ok(sandboxie::is_elevated_pub())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn relaunch_as_admin(app: AppHandle) -> AppResult<()> {
     sandboxie::relaunch_self_as_admin()?;
     // Give the new process a moment to spawn before we exit.
@@ -333,21 +415,28 @@ pub fn relaunch_as_admin(app: AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-#[tauri::command]
-pub fn set_account_favorite(login: String, value: bool) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn set_account_favorite(
+    login: String,
+    value: bool,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<()> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     workspace::set_favorite(&ws, &login, value)
 }
 
-#[tauri::command]
-pub fn refresh_account_avatar(login: String) -> AppResult<Option<PathBuf>> {
+#[tauri::command(async)]
+pub fn refresh_account_avatar(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<Option<PathBuf>> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     workspace::refresh_avatar(&ws, &login)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_running_sandboxes() -> AppResult<Vec<sandboxie::RunningSandbox>> {
     let info = sandboxie::detect();
     if !info.installed {
@@ -356,7 +445,7 @@ pub fn list_running_sandboxes() -> AppResult<Vec<sandboxie::RunningSandbox>> {
     Ok(sandboxie::list_running(&info))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn stop_sandbox(login: String) -> AppResult<()> {
     let info = sandboxie::detect();
     if !info.installed {
@@ -365,7 +454,7 @@ pub fn stop_sandbox(login: String) -> AppResult<()> {
     sandboxie::stop_box(&info, &login)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_account_games(_login: String) -> AppResult<Vec<InstalledGame>> {
     // NOTE: The `_login` parameter is kept for forward compatibility — later
     // we may filter by owned-apps once we wire up the Steam Web API. Right
@@ -376,14 +465,15 @@ pub fn list_account_games(_login: String) -> AppResult<Vec<InstalledGame>> {
     Ok(library::list_installed_games(&main))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn launch_game(
     login: String,
     appid: u32,
     mode: Option<String>,
+    expected_workspace: Option<PathBuf>,
 ) -> AppResult<LaunchOutcome> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let main = require_main(&s)?;
     let sb = sandboxie::detect();
     let accounts = workspace::list_accounts(&ws)?;
@@ -398,7 +488,7 @@ pub fn launch_game(
     Ok(outcome)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn open_url(url: String) -> AppResult<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
@@ -434,7 +524,7 @@ pub fn open_url(url: String) -> AppResult<()> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_account_shortcut(login: String) -> AppResult<PathBuf> {
     shortcut::create_desktop_shortcut(&login)
 }
@@ -442,10 +532,10 @@ pub fn create_account_shortcut(login: String) -> AppResult<PathBuf> {
 /// Reveal an account's auth folder (where maFile.json / maFile.enc lives) in
 /// the system file explorer. Returns the resolved path so the caller can show
 /// it to the user even if launching Explorer fails.
-#[tauri::command]
-pub fn auth_open_folder(login: String) -> AppResult<PathBuf> {
+#[tauri::command(async)]
+pub fn auth_open_folder(login: String, expected_workspace: Option<PathBuf>) -> AppResult<PathBuf> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let dir = workspace::auth_dir(&ws, &login)?;
     // Best-effort `explorer.exe <path>`. Don't surface failure as an error —
     // the user still has the path.
@@ -473,6 +563,15 @@ pub struct AccountAuthStatus {
     pub login: String,
     #[serde(rename = "hasAuthenticator")]
     pub has_authenticator: bool,
+    #[serde(rename = "hasSavedPassword")]
+    pub has_saved_password: bool,
+    #[serde(rename = "autoLogin")]
+    pub auto_login: sda::credentials::AutoLoginStatus,
+    #[serde(rename = "steamId")]
+    pub steam_id: Option<String>,
+    pub enrollment: &'static str,
+    #[serde(rename = "identityMismatch")]
+    pub identity_mismatch: bool,
     #[serde(rename = "accountName")]
     pub account_name: Option<String>,
     #[serde(rename = "importedAt")]
@@ -482,30 +581,54 @@ pub struct AccountAuthStatus {
 }
 
 /// Return per-account authenticator presence. Does NOT load shared_secret.
-#[tauri::command]
-pub fn auth_status() -> AppResult<Vec<AccountAuthStatus>> {
+#[tauri::command(async)]
+pub fn auth_status(expected_workspace: Option<PathBuf>) -> AppResult<Vec<AccountAuthStatus>> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let accounts = workspace::list_accounts(&ws)?;
     let now = sda::session_state::now_secs();
     let mut out = Vec::with_capacity(accounts.len());
     for a in accounts {
         let has = sda::vault::has_any(&ws, &a.login);
-        let session_state = if has && a.has_authenticator {
-            // Lazy load only when there's actually something to classify.
-            // load_plain may fail if the vault is locked — treat that as
-            // NoSession so the UI doesn't lie about a session it can't see.
-            match sda::vault::load_plain(&ws, &a.login) {
-                Ok(Some(mf)) => sda::session_state::classify(&mf, &a.login, now),
-                _ => sda::session_state::SessionState::NoSession,
-            }
-        } else {
-            sda::session_state::SessionState::NoSession
-        };
+        let mf = sda::vault::load_plain(&ws, &a.login).ok().flatten();
+        let mismatch = mf
+            .as_ref()
+            .is_some_and(|mf| workspace::validate_auth_identity(&ws, &a.login, mf).is_err());
+        let session_state = mf
+            .as_ref()
+            .map(|mf| sda::session_state::classify(mf, &a.login, now))
+            .unwrap_or(sda::session_state::SessionState::NoSession);
+        let meta = workspace::read_meta(&a.path);
+        let account_name = mf
+            .as_ref()
+            .map(|mf| mf.account_name.clone())
+            .or(meta.authenticator_account_name);
+        let steam_id = mf
+            .as_ref()
+            .and_then(|mf| mf.session.as_ref().map(|s| s.steam_id.to_string()))
+            .or(a.steam_id.clone());
+        let recovery_exists = workspace::auth_dir(&ws, &a.login)?.join("enrollment.dpapi").is_file();
+        let enrollment = mf
+            .as_ref()
+            .map(|mf| {
+                if mf.fully_enrolled == Some(false) {
+                    "pending"
+                } else if mf.recovery_pending {
+                    "recovery"
+                } else {
+                    "none"
+                }
+            })
+            .unwrap_or(if recovery_exists { "pending" } else { "none" });
         out.push(AccountAuthStatus {
             login: a.login.clone(),
             has_authenticator: has && a.has_authenticator,
-            account_name: if has { Some(a.login.clone()) } else { None },
+            has_saved_password: sda::credentials::has_saved(&ws, &a.login),
+            account_name,
+            steam_id,
+            enrollment,
+            identity_mismatch: mismatch,
+            auto_login: sda::credentials::status(&ws, &a.login),
             imported_at: a.authenticator_imported_at.clone(),
             session_state,
         });
@@ -515,10 +638,13 @@ pub fn auth_status() -> AppResult<Vec<AccountAuthStatus>> {
 
 /// Return the current SessionState for a single account. Cheap; safe to
 /// poll on UI mount or after operations that may have changed the session.
-#[tauri::command]
-pub fn auth_session_state(login: String) -> AppResult<sda::session_state::SessionState> {
+#[tauri::command(async)]
+pub fn auth_session_state(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<sda::session_state::SessionState> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let now = sda::session_state::now_secs();
     match sda::vault::load_plain(&ws, &login)? {
         Some(mf) => Ok(sda::session_state::classify(&mf, &login, now)),
@@ -529,17 +655,20 @@ pub fn auth_session_state(login: String) -> AppResult<sda::session_state::Sessio
 /// Import a `.maFile` into the given shadow account. Accepts either a JSON
 /// body string or a filesystem path (we pick by checking path existence).
 /// For SDA-encrypted imports pass the unlock password as `encryption_password`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn auth_import_mafile(
     login: String,
     source: String,
     encryption_password: Option<String>,
+    expected_workspace: Option<PathBuf>,
 ) -> AppResult<AccountAuthStatus> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
     // Ensure the shadow account exists up-front — we want a clear error,
     // not a silent dir creation, if the user typo'd the login.
-    let dir = workspace::account_dir(&ws, &login);
+    let dir = workspace::checked_account_dir(&ws, &login)?;
     if !dir.exists() {
         return Err(AppError::NotFound(format!("account {login}")));
     }
@@ -562,20 +691,26 @@ pub fn auth_import_mafile(
     // `encryption_iv` / `encryption_salt` siblings. (Manifest-free import
     // path — user just points at the single file.)
     let mf = match serde_json::from_slice::<serde_json::Value>(&bytes) {
-        Ok(v) if v.get("Encrypted").and_then(|e| e.as_bool()).unwrap_or(false)
-              || v.get("encryption_iv").is_some() =>
+        Ok(v)
+            if v.get("Encrypted")
+                .and_then(|e| e.as_bool())
+                .unwrap_or(false)
+                || v.get("encryption_iv").is_some() =>
         {
             let pw = encryption_password
                 .ok_or_else(|| AppError::NotReady("MAFILE_NEEDS_PASSWORD".into()))?;
-            let iv = v.get("encryption_iv")
+            let iv = v
+                .get("encryption_iv")
                 .and_then(|s| s.as_str())
                 .ok_or_else(|| AppError::Other("MAFILE_NO_IV".into()))?;
-            let salt = v.get("encryption_salt")
+            let salt = v
+                .get("encryption_salt")
                 .and_then(|s| s.as_str())
                 .ok_or_else(|| AppError::Other("MAFILE_NO_SALT".into()))?;
             // SDA wraps ciphertext in a field or the whole file. We expect the
             // `EncryptedData` / `encrypted` field to hold base64 of AES-CBC.
-            let ct = v.get("EncryptedData")
+            let ct = v
+                .get("EncryptedData")
                 .or_else(|| v.get("encrypted_data"))
                 .or_else(|| v.get("encrypted"))
                 .and_then(|s| s.as_str())
@@ -586,15 +721,32 @@ pub fn auth_import_mafile(
         _ => sda::mafile::MaFile::from_json_bytes(&bytes)?,
     };
 
+    workspace::validate_auth_identity(&ws, &login, &mf)?;
     sda::vault::save_plain(&ws, &login, &mf)?;
-    workspace::set_authenticator_meta(&ws, &login, true, Some(mf.account_name.clone()))?;
+    workspace::set_authenticator_meta(
+        &ws,
+        &login,
+        mf.fully_enrolled != Some(false),
+        Some(mf.account_name.clone()),
+    )?;
     tracing::info!("sda: imported maFile for login={}", login);
     let now = sda::session_state::now_secs();
     let session_state = sda::session_state::classify(&mf, &login, now);
     Ok(AccountAuthStatus {
         login: login.clone(),
         has_authenticator: true,
+        has_saved_password: sda::credentials::has_saved(&ws, &login),
         account_name: Some(mf.account_name.clone()),
+        steam_id: mf.session.as_ref().map(|s| s.steam_id.to_string()),
+        enrollment: if mf.fully_enrolled == Some(false) {
+            "pending"
+        } else if mf.recovery_pending {
+            "recovery"
+        } else {
+            "none"
+        },
+        identity_mismatch: false,
+        auto_login: sda::credentials::status(&ws, &login),
         imported_at: Some(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -607,10 +759,14 @@ pub fn auth_import_mafile(
 
 /// Export a `.maFile` for the given login to the chosen path (plain JSON,
 /// SDA-compatible).
-#[tauri::command]
-pub fn auth_export_mafile(login: String, target_path: PathBuf) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn auth_export_mafile(
+    login: String,
+    target_path: PathBuf,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<()> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let mf = sda::vault::load_plain(&ws, &login)?
         .ok_or_else(|| AppError::NotFound(format!("no maFile for {login}")))?;
     if let Some(parent) = target_path.parent() {
@@ -621,87 +777,155 @@ pub fn auth_export_mafile(login: String, target_path: PathBuf) -> AppResult<()> 
 }
 
 /// Wipe the authenticator data for a shadow account.
-#[tauri::command]
-pub fn auth_remove(login: String) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn auth_remove(login: String, expected_workspace: Option<PathBuf>) -> AppResult<()> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
+    sda::reauth::forget(&ws, &login)?;
     sda::vault::remove(&ws, &login)?;
+    let recovery = workspace::auth_dir(&ws, &login)?.join("enrollment.dpapi");
+    if recovery.exists() {
+        std::fs::remove_file(recovery)?;
+    }
+    sda::add::drop_session(&login);
     workspace::set_authenticator_meta(&ws, &login, false, None)?;
     Ok(())
 }
 
 /// Generate the current Steam Guard code. Cheap enough to call every second
 /// from the UI — the time-offset cache avoids network traffic.
-#[tauri::command]
-pub fn auth_generate_code(login: String) -> AppResult<GuardCode> {
+#[tauri::command(async)]
+pub fn auth_generate_code(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<GuardCode> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
     let mf = sda::vault::load_plain(&ws, &login)?
         .ok_or_else(|| AppError::NotFound(format!("no maFile for {login}")))?;
+    workspace::validate_auth_identity(&ws, &login, &mf)?;
     let (code, at) = sda::totp::generate_code_now(&mf.shared_secret)?;
     let remaining = 30 - (at % 30);
     Ok(GuardCode {
         code,
-        generated_at: at,
+        generated_at: sda::session_state::now_secs(),
         period_remaining: remaining,
     })
 }
 
 /// Force-refresh the Steam server-time offset.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn auth_sync_time() -> AppResult<()> {
     sda::totp::sync_time()
 }
 
 /// Fetch the current list of pending mobile confirmations for this account.
 #[tauri::command]
-pub fn auth_confirmations_list(login: String) -> AppResult<Vec<sda::confirmations::Confirmation>> {
-    let s = settings::load()?;
-    let ws = require_workspace(&s)?;
-    let mf = sda::vault::load_plain(&ws, &login)?
-        .ok_or_else(|| AppError::NotFound(format!("no maFile for {login}")))?;
-    sda::confirmations::list(&mf, &login)
+pub async fn auth_confirmations_list(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<Vec<sda::confirmations::Confirmation>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = settings::load()?;
+        let ws = require_workspace(&s, expected_workspace.as_deref())?;
+        sda::session::with_ready(&ws, &login, |mf| sda::confirmations::list(mf, &login))
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("Authenticator worker: {e}")))?
+}
+
+/// Fetch the item descriptions for a pending trade on the selected account.
+#[tauri::command]
+pub async fn auth_confirmation_details(
+    login: String,
+    id: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<sda::confirmations::TradeDetails> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = settings::load()?;
+        let ws = require_workspace(&s, expected_workspace.as_deref())?;
+        sda::session::with_ready(&ws, &login, |mf| sda::confirmations::trade_details(mf, &login, &id))
+    }).await.map_err(|e| AppError::Other(format!("Authenticator worker: {e}")))?
 }
 
 /// Allow or reject a batch of confirmations.
 #[tauri::command]
-pub fn auth_confirmations_respond(
+pub async fn auth_confirmations_respond(
     login: String,
     ids: Vec<String>,
     op: String,
+    expected_workspace: Option<PathBuf>,
 ) -> AppResult<Vec<sda::confirmations::RespondResult>> {
-    let s = settings::load()?;
-    let ws = require_workspace(&s)?;
-    let mf = sda::vault::load_plain(&ws, &login)?
-        .ok_or_else(|| AppError::NotFound(format!("no maFile for {login}")))?;
-    let op = match op.as_str() {
-        "allow" => sda::confirmations::Op::Allow,
-        "reject" | "cancel" | "deny" => sda::confirmations::Op::Reject,
-        _ => return Err(AppError::Other(format!("unknown op: {op}"))),
-    };
-    sda::confirmations::respond(&mf, &login, &ids, op)
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = settings::load()?;
+        let ws = require_workspace(&s, expected_workspace.as_deref())?;
+        let op = match op.as_str() {
+            "allow" => sda::confirmations::Op::Allow,
+            "reject" | "cancel" | "deny" => sda::confirmations::Op::Reject,
+            _ => return Err(AppError::Other(format!("unknown op: {op}"))),
+        };
+        sda::session::with_ready(&ws, &login, |mf| {
+            sda::confirmations::respond(mf, &login, &ids, op)
+        })
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("Authenticator worker: {e}")))?
 }
 
 /// Step 1+2 of mobile login: fetch RSA key, encrypt password, open session.
 /// Returns { clientId, requestId, steamId, allowedConfirmations, interval }.
 #[tauri::command]
-pub fn auth_login_begin(
+pub async fn auth_login_begin(
+    login: String,
     account_name: String,
     password: String,
+    remember_password: Option<bool>,
+    expected_workspace: Option<PathBuf>,
 ) -> AppResult<sda::login::BeginOutcome> {
-    sda::login::begin(&account_name, &password)
+    let password = zeroize::Zeroizing::new(password);
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = settings::load()?;
+        let ws = require_workspace(&s, expected_workspace.as_deref())?;
+        sda::reauth::begin_manual(
+            &ws,
+            &login,
+            &account_name,
+            password,
+            remember_password.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("Login worker: {e}")))?
+}
+
+#[tauri::command(async)]
+pub fn auth_login_cancel(client_id: String) {
+    sda::reauth::cancel(&client_id);
+}
+
+#[tauri::command(async)]
+pub fn auth_password_forget(login: String, expected_workspace: Option<PathBuf>) -> AppResult<()> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    sda::reauth::forget(&ws, &login)
 }
 
 /// Step 3: submit a Steam Guard code (device-code or email-code) to the
 /// currently-open auth session.
 #[tauri::command]
-pub fn auth_login_submit_code(
+pub async fn auth_login_submit_code(
     client_id: String,
     steam_id: String,
     code: String,
     code_type: i64,
 ) -> AppResult<()> {
-    sda::login::submit_code(&client_id, &steam_id, &code, code_type)
+    tauri::async_runtime::spawn_blocking(move || {
+        sda::login::submit_code(&client_id, &steam_id, &code, code_type)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("Login worker: {e}")))?
 }
 
 /// Step 4: poll for tokens. Returns a state enum; Done = tokens have been
@@ -713,93 +937,48 @@ pub fn auth_login_submit_code(
 /// signal (QueryStatus only reports mobile-authenticator state, it can't tell
 /// "Email Guard on" apart from "no Guard").
 #[tauri::command]
-pub fn auth_login_poll(
+pub async fn auth_login_poll(
     login: String,
     client_id: String,
     request_id: String,
     allowed_confirmations: Option<Vec<i64>>,
+    expected_workspace: Option<PathBuf>,
 ) -> AppResult<sda::login::PollState> {
-    let state = sda::login::poll(&client_id, &request_id)?;
-    if let sda::login::PollState::Done {
-        access_token,
-        refresh_token,
-        account_name,
-        steam_id,
-        ..
-    } = &state
-    {
-        // Persist into the per-account maFile Session block. If the user has
-        // no maFile yet (pure login with no pre-existing authenticator),
-        // silently ignore — caller will surface it on first confirmation.
+    tauri::async_runtime::spawn_blocking(move || {
         let s = settings::load()?;
-        let ws = require_workspace(&s)?;
-        let sid = steam_id.parse::<u64>().unwrap_or(0);
-        let session_id = random_session_id();
-        // Always seed the add-authenticator registry so the "Add" wizard can
-        // pick up where login left off without re-entering the password.
-        sda::add::put_session(
+        let ws = require_workspace(&s, expected_workspace.as_deref())?;
+        sda::reauth::validate_pending(&ws, &login, &client_id, &request_id)?;
+        let state = sda::login::poll(&client_id, &request_id)?;
+        sda::reauth::complete_manual(
+            &ws,
             &login,
-            access_token.clone(),
-            refresh_token.clone(),
-            sid,
-            session_id.clone(),
-            allowed_confirmations.clone().unwrap_or_default(),
-        );
-        if let Some(mut mf) = sda::vault::load_plain(&ws, &login)? {
-            mf.session = Some(crate::sda::mafile::SessionData {
-                steam_id: sid,
-                access_token: access_token.clone(),
-                refresh_token: refresh_token.clone(),
-                session_id,
-            });
-            // If account_name arrived fresh, trust Steam over user input.
-            if !account_name.is_empty() {
-                mf.account_name = account_name.clone();
-            }
-            sda::vault::save_plain(&ws, &login, &mf)?;
-            workspace::set_authenticator_meta(&ws, &login, true, Some(mf.account_name.clone()))?;
+            &client_id,
+            &state,
+            allowed_confirmations.unwrap_or_default(),
+        )?;
+        if matches!(&state, sda::login::PollState::Failed { .. }) {
+            sda::reauth::cancel(&client_id);
         }
-        // Fresh login → any prior "needs relogin" sentinel is now stale.
-        sda::relogin_flag::clear(&login);
-    }
-    Ok(state)
+        Ok(state)
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("Login worker: {e}")))?
 }
 
 /// Force-refresh the access_token for an account (no re-login needed as long
 /// as refresh_token is still valid, which is ~200 days).
 #[tauri::command]
-pub fn auth_login_refresh(login: String) -> AppResult<()> {
-    let s = settings::load()?;
-    let ws = require_workspace(&s)?;
-    let mut mf = sda::vault::load_plain(&ws, &login)?
-        .ok_or_else(|| AppError::NotFound(format!("no maFile for {login}")))?;
-    let sess = mf
-        .session
-        .as_ref()
-        .ok_or_else(|| AppError::NotReady("NO_SESSION".into()))?
-        .clone();
-    let new_tok = match sda::login::refresh_access_token(&sess.refresh_token, &sess.steam_id.to_string()) {
-        Ok(t) => t,
-        Err(e) => {
-            // Steam refused the refresh_token — treat as full re-login required.
-            sda::relogin_flag::mark(&login);
-            return Err(e);
-        }
-    };
-    let mut updated = sess.clone();
-    updated.access_token = new_tok;
-    mf.session = Some(updated);
-    sda::vault::save_plain(&ws, &login, &mf)?;
-    sda::relogin_flag::clear(&login);
-    Ok(())
-}
-
-fn random_session_id() -> String {
-    use rand::RngCore;
-    let mut buf = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut buf);
-    // Steam's `sessionid` is 24-char hex in the mobile client.
-    buf.iter().map(|b| format!("{:02x}", b)).collect()
+pub async fn auth_login_refresh(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<()> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = settings::load()?;
+        let ws = require_workspace(&s, expected_workspace.as_deref())?;
+        sda::session::with_ready(&ws, &login, |_| Ok(()))
+    })
+    .await
+    .map_err(|e| AppError::Other(format!("Authenticator worker: {e}")))?
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -812,95 +991,66 @@ pub struct AuthLockStatus {
 }
 
 /// Report whether a master password is currently configured and/or unlocked.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn auth_lock_status() -> AppResult<AuthLockStatus> {
     let s = settings::load()?;
     let has_encrypted = match s.workspace.as_ref() {
         Some(ws) => workspace::list_accounts(ws)
             .ok()
             .map(|accs| {
-                accs.iter()
-                    .any(|a| sda::vault::mafile_enc_path(ws, &a.login)
+                accs.iter().any(|a| {
+                    sda::vault::mafile_enc_path(ws, &a.login)
                         .map(|p| p.exists())
-                        .unwrap_or(false))
+                        .unwrap_or(false)
+                })
             })
             .unwrap_or(false),
         None => false,
     };
     Ok(AuthLockStatus {
-        enabled: s.auth_master_password_enabled,
-        unlocked: sda::vault::has_master_password_unlocked(),
+        enabled: s
+            .workspace
+            .as_ref()
+            .map(|ws| sda::vault::initialize(ws, s.auth_master_password_enabled))
+            .transpose()?
+            .unwrap_or(false),
+        unlocked: s
+            .workspace
+            .as_ref()
+            .is_some_and(|ws| sda::vault::has_master_password_unlocked(ws)),
         has_encrypted_files: has_encrypted,
     })
 }
 
 /// Submit the master password for the current session. Fails with
 /// `VAULT_BAD_PASSWORD` if it doesn't decrypt the first maFile.enc found.
-#[tauri::command]
-pub fn auth_unlock(password: String) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn auth_unlock(password: String, expected_workspace: Option<PathBuf>) -> AppResult<()> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
-    // Probe against the first encrypted file we can find.
-    let accounts = workspace::list_accounts(&ws)?;
-    let mut probed = false;
-    for a in &accounts {
-        let enc = sda::vault::mafile_enc_path(&ws, &a.login)?;
-        if enc.exists() {
-            let blob = std::fs::read(&enc)?;
-            sda::crypto::vault_decrypt(&password, &blob)
-                .map_err(|_| AppError::Other("VAULT_BAD_PASSWORD".into()))?;
-            probed = true;
-            break;
-        }
-    }
-    if !probed {
-        // No encrypted file exists yet — that's fine, treat unlock as
-        // accepting the password for future writes.
-        tracing::info!("auth_unlock: no encrypted files; accepting password");
-    }
-    sda::vault::set_master_password(Some(password));
-    Ok(())
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    sda::vault::unlock(&ws, password)
 }
 
 /// Drop the master password from memory (re-lock). Files stay encrypted.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn auth_lock() -> AppResult<()> {
-    sda::vault::set_master_password(None);
+    sda::vault::lock();
     Ok(())
 }
 
 /// Enable / change / disable the master password. `new_password = None`
 /// disables encryption entirely (all files are rewritten as plain JSON).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn auth_set_master_password(
     old_password: Option<String>,
     new_password: Option<String>,
+    expected_workspace: Option<PathBuf>,
 ) -> AppResult<()> {
-    let mut s = settings::load()?;
-    let ws = require_workspace(&s)?;
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
 
-    // To read existing encrypted files we need the old password loaded.
-    if let Some(op) = old_password.as_ref() {
-        sda::vault::set_master_password(Some(op.clone()));
-    }
-    // Validate old password by attempting to load anything encrypted.
-    let accounts = workspace::list_accounts(&ws)?;
-    for a in &accounts {
-        let enc = sda::vault::mafile_enc_path(&ws, &a.login)?;
-        if enc.exists() {
-            let blob = std::fs::read(&enc)?;
-            let pw = old_password
-                .as_deref()
-                .ok_or_else(|| AppError::NotReady("AUTH_NEEDS_OLD_PASSWORD".into()))?;
-            sda::crypto::vault_decrypt(pw, &blob)
-                .map_err(|_| AppError::Other("VAULT_BAD_PASSWORD".into()))?;
-            break;
-        }
-    }
-
-    sda::vault::rekey_all(&ws, new_password.as_deref())?;
-    s.auth_master_password_enabled = new_password.is_some();
-    settings::save(&s)?;
+    sda::vault::rekey_all(&ws, old_password.as_deref(), new_password.as_deref())?;
+    settings::update(|current| current.auth_master_password_enabled = new_password.is_some())?;
     Ok(())
 }
 
@@ -917,59 +1067,89 @@ pub struct PollerConfig {
 /// Apply poller configuration. Persists to settings, then kicks the poller
 /// so the new state takes effect immediately (instead of waiting up to N
 /// seconds for the current sleep to end).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn auth_poller_configure(cfg: PollerConfig) -> AppResult<()> {
-    let mut s = settings::load()?;
-    s.auth_poller_enabled = cfg.enabled;
-    s.auth_poller_interval = cfg.interval.clamp(15, 600);
-    s.auth_auto_confirm_trades = cfg.auto_confirm_trades;
-    s.auth_auto_confirm_market = cfg.auto_confirm_market;
-    settings::save(&s)?;
+    settings::update(|s| {
+        s.auth_poller_enabled = cfg.enabled;
+        s.auth_poller_interval = cfg.interval.clamp(15, 600);
+        s.auth_auto_confirm_trades = cfg.auto_confirm_trades;
+        s.auth_auto_confirm_market = cfg.auto_confirm_market;
+    })?;
     sda::poller::poke();
     Ok(())
 }
 
-#[tauri::command]
-pub fn auth_poller_poke() -> AppResult<()> {
-    sda::poller::poke();
-    Ok(())
+#[tauri::command(async)]
+pub fn auth_poller_poke(app: AppHandle) -> AppResult<()> {
+    sda::poller::check_now(&app)
 }
 
 // ── P12: AddAuthenticator wizard ──────────────────────────────────────────
 
 /// Diagnose post-login state so the wizard can pick the right path without
 /// guess-and-check. Combines QueryStatus + AccountPhoneStatus.
-#[tauri::command]
-pub fn auth_add_diagnose(login: String) -> AppResult<sda::add::AddDiagnostic> {
+#[tauri::command(async)]
+pub fn auth_add_diagnose(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<sda::add::AddDiagnostic> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
     sda::add::diagnose(&login)
 }
 
 /// Phase A.1: attach a phone number to the account. Steam will email the
 /// account owner to confirm; the UI polls `auth_add_check_email` afterwards.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn auth_add_set_phone(
     login: String,
     phone_number: String,
     phone_country_code: String,
+    expected_workspace: Option<PathBuf>,
 ) -> AppResult<sda::add::SetPhoneResult> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
     sda::add::add_set_phone(&login, &phone_number, &phone_country_code)
 }
 
 /// Phase A.2: poll whether we're still waiting on the email-confirmation step.
-#[tauri::command]
-pub fn auth_add_check_email(login: String) -> AppResult<sda::add::PhoneState> {
+#[tauri::command(async)]
+pub fn auth_add_check_email(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<sda::add::PhoneState> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
     sda::add::add_check_email(&login)
 }
 
 /// Phase A.3: ask Steam to send the SMS verification code.
-#[tauri::command]
-pub fn auth_add_send_sms(login: String) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn auth_add_send_sms(login: String, expected_workspace: Option<PathBuf>) -> AppResult<()> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
     sda::add::add_send_sms(&login)
 }
 
 /// Phase A.4: submit the SMS code to verify the phone number.
-#[tauri::command]
-pub fn auth_add_verify_phone(login: String, code: String) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn auth_add_verify_phone(
+    login: String,
+    code: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<()> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
     sda::add::add_verify_phone(&login, &code)
 }
 
@@ -982,46 +1162,92 @@ pub fn auth_add_verify_phone(login: String, code: String) -> AppResult<()> {
 /// `auth_add_persist` runs we'd lock the user out forever. So we eagerly
 /// stash a `fully_enrolled=false` maFile immediately, which the persist step
 /// later overwrites with the activated record.
-#[tauri::command]
-pub fn auth_add_create(login: String) -> AppResult<sda::add::AddCreatePublic> {
-    let r = sda::add::add_create(&login)?;
-    if let Ok(s) = settings::load() {
-        if let Ok(ws) = require_workspace(&s) {
-            if let Err(e) = sda::add::add_persist_partial(&login, &ws) {
-                tracing::error!("auth_add_create: partial persist failed: {e}");
-            }
-        }
+#[tauri::command(async)]
+pub fn auth_add_create(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<sda::add::AddCreatePublic> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    sda::vault::ensure_writable(&ws)?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
+    if let Some(existing) = sda::vault::load_plain(&ws, &login)? {
+        if existing.fully_enrolled != Some(false) { return Err(AppError::NotReady("ADD_AUTH_ALREADY_HAS_AUTHENTICATOR".into())); }
+        sda::add::resume(&ws, &login)?;
     }
+    let r = sda::add::add_create(&login)?;
+    sda::add::add_persist_partial(&login, &ws)?;
     Ok(r)
 }
 
 /// Phase C: Finalize. Surface back the revocation code to the UI ONCE so the
 /// user can copy/screenshot it before we persist anything to disk.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn auth_add_finalize(
     login: String,
     sms_code: String,
     try_number: u32,
     validate_sms: bool,
+    expected_workspace: Option<PathBuf>,
 ) -> AppResult<sda::add::AddFinalizePublic> {
-    sda::add::add_finalize(&login, &sms_code, try_number, validate_sms)
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    sda::vault::ensure_writable(&ws)?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
+    let r = sda::add::add_finalize(&login, &sms_code, try_number, validate_sms)?;
+    if r.success {
+        sda::add::add_persist(&login, &ws)?;
+    }
+    Ok(r)
 }
 
 /// Final commit: write the maFile to disk + update workspace meta. The UI
 /// MUST gate this on the user explicitly confirming they wrote down the
 /// revocation code.
-#[tauri::command]
-pub fn auth_add_persist(login: String) -> AppResult<()> {
+#[tauri::command(async)]
+pub fn auth_add_persist(login: String, expected_workspace: Option<PathBuf>) -> AppResult<()> {
     let s = settings::load()?;
-    let ws = require_workspace(&s)?;
-    sda::add::add_persist(&login, &ws)?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
+    sda::add::acknowledge(&ws, &login)?;
     sda::poller::poke();
     Ok(())
 }
 
 /// Abort the wizard, drop in-memory secrets without touching disk.
-#[tauri::command]
-pub fn auth_add_cancel(login: String) -> AppResult<()> {
-    sda::add::drop_session(&login);
-    Ok(())
+#[tauri::command(async)]
+pub fn auth_add_cancel(login: String, expected_workspace: Option<PathBuf>) -> AppResult<()> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
+    sda::add::cancel(&ws, &login)
+}
+
+#[tauri::command(async)]
+pub fn auth_add_resume(
+    login: String,
+    expected_workspace: Option<PathBuf>,
+) -> AppResult<sda::add::Resume> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    let gate = sda::session::account_gate(&ws, &login)?;
+    let _guard = gate.lock().unwrap();
+    sda::add::resume(&ws, &login)
+}
+
+#[tauri::command(async)]
+pub fn recover_settings() -> AppResult<Settings> {
+    let _exclusive = crate::lifecycle::write();
+    settings::recover_settings()
+}
+
+#[tauri::command(async)]
+pub fn cleanup_backups(expected_workspace: Option<PathBuf>) -> AppResult<crate::backups::Cleanup> {
+    let s = settings::load()?;
+    let ws = require_workspace(&s, expected_workspace.as_deref())?;
+    crate::backups::maintain(&ws)
 }

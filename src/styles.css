@@ -1,5 +1,4 @@
 /* Steam Shadow Launcher — chromeless v2 */
-@import url("https://fonts.googleapis.com/css2?family=VT323&family=JetBrains+Mono:wght@400;600&display=swap");
 
 :root {
   --bg: #0b0f0e;
@@ -29,7 +28,7 @@ html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--bg);
   color: var(--fg);
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
   line-height: 1.35;
   overflow: hidden;
@@ -38,17 +37,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-body::before {
-  content: "";
-  position: fixed; inset: 0; pointer-events: none;
-  background: repeating-linear-gradient(to bottom,
-    rgba(255,255,255,0.010) 0px, rgba(255,255,255,0.010) 1px,
-    transparent 1px, transparent 3px);
-  z-index: 999;
-}
 
 button {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 10px;
   color: var(--fg);
   background: var(--bg-elev);
@@ -56,8 +47,8 @@ button {
   padding: 3px 8px;
   cursor: pointer;
   transition: background .1s, border-color .1s, color .1s;
-  text-transform: uppercase;
-  letter-spacing: .06em;
+  text-transform: none;
+  letter-spacing: normal;
 }
 button:hover:not(:disabled) {
   background: var(--bg-elev-2);
@@ -77,7 +68,7 @@ button.ghost { background: transparent; border-color: var(--border); }
 button.xs { padding: 2px 5px; font-size: 9px; }
 
 input[type="text"], input[type="password"], select {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
   color: var(--fg);
   background: #0a0e0d;
@@ -116,15 +107,15 @@ input:focus { border-color: var(--accent-dim); }
 .tb-logo {
   font-family: var(--pixel);
   font-size: 17px;
-  letter-spacing: .1em;
+  letter-spacing: normal;
   color: var(--accent);
   text-shadow: 0 0 4px rgba(102,255,204,.3);
 }
 .tb-sub {
   font-size: 9px;
   color: var(--fg-mute);
-  letter-spacing: .15em;
-  text-transform: uppercase;
+  letter-spacing: normal;
+  text-transform: none;
 }
 .tb-btn {
   border: none;
@@ -179,7 +170,7 @@ input:focus { border-color: var(--accent-dim); }
 .sb-title {
   font-family: var(--pixel);
   font-size: 13px;
-  letter-spacing: .15em;
+  letter-spacing: normal;
   color: var(--fg-mute);
   padding: 0 2px 2px;
   border-bottom: 1px dashed var(--border);
@@ -197,7 +188,7 @@ input:focus { border-color: var(--accent-dim); }
   color: var(--fg-dim);
   font-family: var(--pixel);
   font-size: 13px;
-  letter-spacing: .1em;
+  letter-spacing: normal;
   position: relative;
 }
 .mode-btn .dot {
@@ -223,9 +214,9 @@ input:focus { border-color: var(--accent-dim); }
   border: 1px solid var(--accent-dim);
   color: var(--fg);
   padding: 6px 8px;
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 10px;
-  letter-spacing: 0;
+  letter-spacing: normal;
   text-transform: none;
   z-index: 100;
   white-space: normal;
@@ -235,12 +226,12 @@ input:focus { border-color: var(--accent-dim); }
 
 .sb-status {
   font-size: 9px;
-  letter-spacing: .08em;
+  letter-spacing: normal;
   padding: 2px 4px;
   border: 1px solid var(--border);
   text-align: center;
   margin-top: 2px;
-  text-transform: uppercase;
+  text-transform: none;
   color: var(--fg-mute);
 }
 .sb-status-ready { color: var(--ok); border-color: #204036; }
@@ -254,7 +245,7 @@ input:focus { border-color: var(--accent-dim); }
   padding: 4px 6px;
   font-family: var(--pixel);
   font-size: 13px;
-  letter-spacing: .12em;
+  letter-spacing: normal;
   background: transparent;
   border: 1px solid transparent;
   color: var(--fg-dim);
@@ -274,7 +265,7 @@ input:focus { border-color: var(--accent-dim); }
   padding: 7px 8px 7px 11px;
   font-family: var(--pixel);
   font-size: 11px;
-  letter-spacing: .1em;
+  letter-spacing: normal;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   color: var(--fg-dim);
@@ -313,7 +304,7 @@ input:focus { border-color: var(--accent-dim); }
 .section-title {
   font-family: var(--pixel);
   font-size: 16px;
-  letter-spacing: .12em;
+  letter-spacing: normal;
   color: var(--accent);
   margin: 0 0 6px 0;
 }
@@ -354,7 +345,7 @@ input:focus { border-color: var(--accent-dim); }
   font-family: var(--pixel);
   font-size: 16px;
   color: var(--fg);
-  letter-spacing: .06em;
+  letter-spacing: normal;
   line-height: 1;
 }
 .card .sub { color: var(--fg-mute); font-size: 10px; }
@@ -370,20 +361,20 @@ input:focus { border-color: var(--accent-dim); }
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  image-rendering: pixelated;
+  image-rendering: auto;
 }
 .avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
-  image-rendering: pixelated;
+  image-rendering: auto;
 }
 .avatar-fallback {
   font-family: var(--pixel);
   font-size: 18px;
   color: var(--fg-mute);
-  letter-spacing: 0;
+  letter-spacing: normal;
   line-height: 1;
 }
 
@@ -433,14 +424,14 @@ input:focus { border-color: var(--accent-dim); }
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  image-rendering: pixelated;
+  image-rendering: auto;
 }
 .game-cover img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
-  image-rendering: pixelated;
+  image-rendering: auto;
 }
 .game-cover-fallback {
   font-family: var(--pixel);
@@ -475,7 +466,7 @@ input:focus { border-color: var(--accent-dim); }
   font: inherit;
   font-size: 11px;
   cursor: pointer;
-  letter-spacing: .03em;
+  letter-spacing: normal;
 }
 .ctx-item:hover:not(:disabled) {
   background: var(--accent-dim);
@@ -501,8 +492,8 @@ input:focus { border-color: var(--accent-dim); }
   align-items: center;
   gap: 4px;
   font-size: 9px;
-  letter-spacing: .08em;
-  text-transform: uppercase;
+  letter-spacing: normal;
+  text-transform: none;
   padding: 1px 5px;
   border: 1px solid var(--border-bright);
   background: #0a0e0d;
@@ -552,7 +543,7 @@ input:focus { border-color: var(--accent-dim); }
 .modal h2 {
   font-family: var(--pixel);
   font-size: 18px;
-  letter-spacing: .08em;
+  letter-spacing: normal;
   color: var(--accent);
   margin: 0 0 8px 0;
 }
@@ -560,8 +551,8 @@ input:focus { border-color: var(--accent-dim); }
 .modal .row label {
   font-size: 9px;
   color: var(--fg-dim);
-  text-transform: uppercase;
-  letter-spacing: .1em;
+  text-transform: none;
+  letter-spacing: normal;
 }
 .modal .buttons {
   display: flex; gap: 5px; justify-content: flex-end;
@@ -583,7 +574,7 @@ input:focus { border-color: var(--accent-dim); }
   font-size: 12px;
   line-height: 1;
   text-shadow: 0 0 4px rgba(102,255,204,.3);
-  letter-spacing: .04em;
+  letter-spacing: normal;
   white-space: pre;
 }
 .wizard .step {
@@ -596,12 +587,12 @@ input:focus { border-color: var(--accent-dim); }
   margin: 0 0 2px 0;
   color: var(--accent);
   font-size: 14px;
-  letter-spacing: .06em;
+  letter-spacing: normal;
 }
 .wizard .step .hint { color: var(--fg-mute); font-size: 10px; }
 
 .path {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 10px;
   color: var(--fg-dim);
   word-break: break-all;
@@ -631,7 +622,7 @@ input:focus { border-color: var(--accent-dim); }
   padding: 4px 8px;
   font-family: var(--pixel);
   font-size: 13px;
-  letter-spacing: .1em;
+  letter-spacing: normal;
   color: var(--accent);
   border-bottom: 1px solid var(--border);
   display: flex;
@@ -730,7 +721,7 @@ input:focus { border-color: var(--accent-dim); }
   justify-content: center;
   font-family: var(--pixel);
   font-size: 12px;
-  letter-spacing: .08em;
+  letter-spacing: normal;
   color: var(--fg);
   text-shadow: 0 0 4px rgba(0,0,0,.8);
 }
@@ -877,7 +868,7 @@ input:focus { border-color: var(--accent-dim); }
 .launch-text {
   font-family: var(--pixel);
   font-size: 16px;
-  letter-spacing: .2em;
+  letter-spacing: normal;
   color: var(--accent);
   text-shadow: 0 0 6px rgba(102,255,204,.7);
   z-index: 1;
@@ -931,7 +922,7 @@ button:focus-visible,
   min-width: 18px;
   margin-left: 8px;
   padding: 1px 5px;
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
   text-align: center;
   background: var(--accent);
@@ -957,11 +948,11 @@ button:focus-visible,
 .auth-title {
   font-family: var(--pixel);
   font-size: 26px;
-  letter-spacing: 3px;
+  letter-spacing: normal;
   color: var(--accent);
 }
 .auth-subtitle {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
   color: var(--fg-dim);
 }
@@ -977,7 +968,7 @@ button:focus-visible,
   color: var(--fg);
   margin-bottom: 6px;
 }
-.auth-empty-hint { font-family: var(--mono); font-size: 13px; margin-bottom: 16px; }
+.auth-empty-hint { font-family: var(--ui); font-size: 13px; margin-bottom: 16px; }
 .auth-empty-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1003,12 +994,12 @@ button:focus-visible,
   min-height: 0;
 }
 .auth-rail-section {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
   color: var(--fg-mute);
   padding: 8px 6px 2px;
-  text-transform: uppercase;
-  letter-spacing: 2px;
+  text-transform: none;
+  letter-spacing: normal;
 }
 .auth-rail-item {
   display: flex;
@@ -1038,14 +1029,14 @@ button:focus-visible,
 .auth-rail-avatar img { width: 100%; height: 100%; object-fit: cover; }
 .auth-rail-meta { min-width: 0; flex: 1; }
 .auth-rail-name {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .auth-rail-login {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 10px;
   color: var(--fg-mute);
 }
@@ -1081,7 +1072,7 @@ button:focus-visible,
 .auth-codebar-code {
   font-family: var(--pixel);
   font-size: clamp(22px, 4.4vw, 34px);
-  letter-spacing: clamp(3px, 0.8vw, 6px);
+  letter-spacing: normal;
   color: var(--accent);
   text-shadow: 0 0 10px rgba(102, 255, 204, 0.3);
   line-height: 1;
@@ -1110,7 +1101,7 @@ button:focus-visible,
   position: relative;
   z-index: 1;
   padding: 0 8px;
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
   color: var(--fg);
   margin-left: auto;
@@ -1125,7 +1116,7 @@ button:focus-visible,
   padding: 4px 8px;
 }
 .auth-codebar-meta {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
   color: var(--fg-dim);
   padding: 0 4px;
@@ -1192,7 +1183,7 @@ button:focus-visible,
   transition: width 1s linear;
 }
 .auth-code-meta {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
   color: var(--fg-dim);
 }
@@ -1211,11 +1202,11 @@ button:focus-visible,
 .auth-noauth-title {
   font-family: var(--pixel);
   font-size: 18px;
-  letter-spacing: 2px;
+  letter-spacing: normal;
   color: var(--fg);
 }
 .auth-noauth-hint {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
   color: var(--fg-dim);
   line-height: 1.5;
@@ -1229,7 +1220,7 @@ button:focus-visible,
 }
 .auth-warn {
   margin-top: 10px;
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
   color: var(--warn);
   text-align: center;
@@ -1244,14 +1235,14 @@ button:focus-visible,
   margin-top: 6px;
   background: var(--bg-elev-3);
   border: 1px dashed var(--border-bright);
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
 }
-.twofa-label { color: var(--fg-mute); letter-spacing: 2px; }
+.twofa-label { color: var(--fg-mute); letter-spacing: normal; }
 .twofa-code {
   font-family: var(--pixel);
   font-size: 18px;
-  letter-spacing: 3px;
+  letter-spacing: normal;
   color: var(--accent);
   flex: 1;
 }
@@ -1278,7 +1269,7 @@ button:focus-visible,
 .modal-title {
   font-family: var(--pixel);
   font-size: 18px;
-  letter-spacing: 3px;
+  letter-spacing: normal;
   color: var(--accent);
   margin-bottom: 10px;
   padding-bottom: 6px;
@@ -1286,8 +1277,8 @@ button:focus-visible,
 }
 .modal-body { display: flex; flex-direction: column; gap: 10px; }
 .modal-body .field { display: flex; flex-direction: column; gap: 4px; }
-.modal-body label { font-family: var(--mono); font-size: 11px; color: var(--fg-dim); letter-spacing: 1px; }
-.modal-body .hint { font-family: var(--mono); font-size: 11px; color: var(--fg-mute); }
+.modal-body label { font-family: var(--ui); font-size: 11px; color: var(--fg-dim); letter-spacing: normal; }
+.modal-body .hint { font-family: var(--ui); font-size: 11px; color: var(--fg-mute); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
 /* Destructive-confirmation dialog. */
@@ -1300,7 +1291,7 @@ button:focus-visible,
    Lift the whole backdrop above the default .modal-backdrop's z-index: 200. */
 .modal-backdrop:has(> .modal.modal-danger) { z-index: 210; }
 .confirm-body {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
   line-height: 1.5;
   color: var(--fg);
@@ -1309,7 +1300,7 @@ button:focus-visible,
 .confirm-bullets {
   list-style: "› ";
   padding-left: 18px;
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
   color: var(--fg-dim);
 }
@@ -1342,7 +1333,7 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
 .auth-conf-title {
   font-family: var(--pixel);
   font-size: 16px;
-  letter-spacing: 3px;
+  letter-spacing: normal;
   color: var(--fg-dim);
   display: flex;
   align-items: center;
@@ -1353,16 +1344,16 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
   padding: 1px 6px;
   background: var(--accent);
   color: #082018;
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
-  letter-spacing: 0;
+  letter-spacing: normal;
   border-radius: 2px;
 }
 .auth-conf-empty {
   padding: 16px;
   text-align: center;
   color: var(--fg-mute);
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
 }
 .auth-conf-list {
@@ -1382,7 +1373,7 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
   background: var(--bg-elev-3);
   border: 1px solid var(--border);
   cursor: pointer;
-  font-family: var(--mono);
+  font-family: var(--ui);
 }
 .auth-conf-row:hover { border-color: var(--border-bright); }
 .auth-conf-row.checked { border-color: var(--accent-dim); background: #0e1c18; }
@@ -1413,8 +1404,8 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
 .auth-conf-type {
   font-size: 10px;
   color: var(--fg-mute);
-  letter-spacing: 1px;
-  text-transform: uppercase;
+  letter-spacing: normal;
+  text-transform: none;
   margin-top: 3px;
 }
 .auth-conf-actions {
@@ -1429,7 +1420,7 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
   background: #2a1315;
   border: 1px solid var(--danger);
   color: var(--danger);
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
 }
 .err-box {
@@ -1474,7 +1465,7 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
   padding: 10px;
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border, #2a2a2a);
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
 }
 .diag-row {
@@ -1488,15 +1479,15 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .diag-label {
   opacity: 0.7;
-  text-transform: uppercase;
-  letter-spacing: 1px;
+  text-transform: none;
+  letter-spacing: normal;
   font-size: 10px;
 }
 .diag-value {
   color: var(--fg, #e0e0e0);
 }
 .diag-steps {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
   padding-left: 20px;
   margin: 8px 0;
@@ -1511,7 +1502,7 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
   align-items: center;
   gap: 10px;
   padding: 18px;
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
   color: var(--fg-dim);
 }
@@ -1524,11 +1515,11 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
   padding: 16px;
   font-family: var(--pixel);
   font-size: 18px;
-  letter-spacing: 2px;
+  letter-spacing: normal;
   color: var(--accent);
 }
 .auth-login-info {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
   color: var(--fg-dim);
   padding: 4px 8px;
@@ -1575,12 +1566,12 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
 .auth-lock-title {
   font-family: var(--pixel);
   font-size: 20px;
-  letter-spacing: 3px;
+  letter-spacing: normal;
   color: var(--accent);
   text-align: center;
 }
 .auth-lock-hint {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 12px;
   color: var(--fg-dim);
   text-align: center;
@@ -1597,7 +1588,7 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
   gap: 8px;
 }
 .auth-sec-row label {
-  font-family: var(--mono);
+  font-family: var(--ui);
   font-size: 11px;
   color: var(--fg-dim);
   width: 110px;
@@ -1607,3 +1598,14 @@ button.danger:disabled { opacity: 0.4; cursor: not-allowed; }
   flex: 1;
 }
 .auth-view { position: relative; }
+
+/* Readable controls at the original minimum window size and when resized. */
+body { font-size: 12px; line-height: 1.5; user-select: text; -webkit-user-select: text; }
+button { font-size: 11px; min-height: 28px; }
+button.xs { font-size: 11px; padding: 4px 7px; }
+input, select, textarea { font-size: 13px; }
+.hint, .sub, .auth-sec-row { font-size: 12px; line-height: 1.5; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.modal { max-height: calc(100vh - 40px); overflow-y: auto; max-width: calc(100vw - 32px); }
+.path, .err-banner, .auth-err { overflow-wrap: anywhere; user-select: text; }
+.titlebar, button { user-select: none; }

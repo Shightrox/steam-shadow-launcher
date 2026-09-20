@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
 import { Spinner } from "./Spinner";
 
@@ -66,7 +67,7 @@ export function ConfirmDialog({
   const matches = !requireText || typed.trim() === requireText.trim();
   const canConfirm = matches && graceElapsed && !busy;
 
-  return (
+  return createPortal(
     <div
       className="modal-backdrop"
       onClick={() => !busy && onCancel()}
@@ -132,6 +133,6 @@ export function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>, document.body
   );
 }

@@ -29,18 +29,11 @@ pub enum SessionState {
 /// (Steam re-checks signatures on every call; we only need the expiry).
 pub fn jwt_exp(token: &str) -> Option<i64> {
     let mid = token.split('.').nth(1)?;
-    // JWT uses base64url without padding.
-    let mut s = mid.replace('-', "+").replace('_', "/");
-    while s.len() % 4 != 0 {
-        s.push('=');
-    }
-    // We re-encode for URL_SAFE_NO_PAD to keep base64 happy with both shapes.
-    let bytes = if mid.contains('+') || mid.contains('/') {
-        base64::engine::general_purpose::STANDARD.decode(s.as_bytes()).ok()?
-    } else {
-        // Strip the padding we just added back off for the URL-safe decoder.
-        B64URL.decode(mid.as_bytes()).ok()?
-    };
+    let normalized = mid
+        .trim_end_matches('=')
+        .replace('+', "-")
+        .replace('/', "_");
+    let bytes = B64URL.decode(normalized).ok()?;
     let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     v.get("exp").and_then(|x| x.as_i64())
 }
@@ -50,23 +43,21 @@ pub fn classify(mf: &MaFile, login: &str, now: i64) -> SessionState {
     let Some(sess) = mf.session.as_ref() else {
         return SessionState::NoSession;
     };
-    if sess.access_token.trim().is_empty() && sess.refresh_token.trim().is_empty() {
+    if sess.steam_id == 0
+        || (sess.access_token.trim().is_empty() && sess.refresh_token.trim().is_empty())
+    {
         return SessionState::NoSession;
     }
     if relogin_flag::is_marked(login) {
         return SessionState::NeedsRelogin;
     }
-    // refresh dead/missing → only full login can save us.
-    let refresh_exp = jwt_exp(&sess.refresh_token);
-    match refresh_exp {
-        Some(exp) if exp > now + 60 => {}
-        _ => return SessionState::NeedsRelogin,
+    // A working access token does not require a refresh token until it expires.
+    if jwt_exp(&sess.access_token).is_some_and(|exp| exp > now + 30) {
+        return SessionState::Ok;
     }
-    // access dead/dying → silent refresh will save us.
-    let access_exp = jwt_exp(&sess.access_token);
-    match access_exp {
-        Some(exp) if exp > now + 30 => SessionState::Ok,
-        _ => SessionState::Refreshable,
+    match jwt_exp(&sess.refresh_token) {
+        Some(exp) if exp > now + 60 => SessionState::Refreshable,
+        _ => SessionState::NeedsRelogin,
     }
 }
 
@@ -123,7 +114,7 @@ mod tests {
     #[test]
     fn needs_relogin_when_refresh_expired() {
         let now = 1_700_000_000;
-        let mf = mf_with_tokens(&jwt_with_exp(now + 3600), &jwt_with_exp(now - 1));
+        let mf = mf_with_tokens(&jwt_with_exp(now - 1), &jwt_with_exp(now - 1));
         relogin_flag::clear("u_re");
         assert_eq!(classify(&mf, "u_re", now), SessionState::NeedsRelogin);
     }
@@ -135,7 +126,10 @@ mod tests {
         mf.identity_secret = "IlXB0Wl4e75NPMGqiZ1n64SMe1E=".into();
         mf.account_name = "x".into();
         relogin_flag::clear("u_ns");
-        assert_eq!(classify(&mf, "u_ns", 1_700_000_000), SessionState::NoSession);
+        assert_eq!(
+            classify(&mf, "u_ns", 1_700_000_000),
+            SessionState::NoSession
+        );
     }
 
     #[test]
@@ -154,6 +148,24 @@ mod tests {
         assert_eq!(
             classify(&mf, "u_bad", 1_700_000_000),
             SessionState::NeedsRelogin
+        );
+    }
+
+    #[test]
+    fn valid_access_works_without_refresh_token() {
+        let mf = mf_with_tokens(&jwt_with_exp(1_700_003_600), "");
+        assert_eq!(
+            classify(&mf, "access_only", 1_700_000_000),
+            SessionState::Ok
+        );
+    }
+
+    #[test]
+    fn accepts_padded_jwt_payload() {
+        let payload = base64::engine::general_purpose::URL_SAFE.encode(br#"{"exp":1700000000}"#);
+        assert_eq!(
+            jwt_exp(&format!("header.{payload}.signature")),
+            Some(1_700_000_000)
         );
     }
 }

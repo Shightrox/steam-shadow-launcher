@@ -17,8 +17,9 @@ Steam Desktop Autheticator + Account Switcher + Parrallel Multi Launcher with Ai
 - **Вход без логинов/паролей** — авторизация по сохранённым сессиям с компа.
 - **Запуск игры** — можно сразу стартовать игру с выбранного аккаунта, обложки подтягиваются из кэша Steam.
 - **Ярлык на аккаунт** — `.lnk` для входа в конкретный профиль в один клик.
-- **Бэкапы и откат** — перед свитчем сохраняются `loginusers.vdf` и ветки реестра. В случае чего есть кнопка «Revert last switch».
-- **Красивый ✨ UI с анимациями** — а не вся блевотина, которая сейчас у конкурентов.
+- **Бэкапы и откат** — `loginusers.vdf` и `AutoLoginUser` сохраняются в одной точке восстановления. Хранятся до 10 точек без одинаковых повторов; старые служебные файлы преобразуются и очищаются автоматически.
+- **Пиксельный интерфейс со стеклом** — компактные плитки с аватаром, кодом Steam Guard и последним запуском; тёмная тема с зелёным акцентом и спокойными частицами. Прозрачность, частицы и анимация настраиваются.
+- **Подтверждения с предметами** — изображения продаж, раскрываемые списки «Вы отдаёте / Вы получаете» в обменах, общая очередь с фильтром по аккаунту.
 - **Портативная версия** — можно запускать как установленный, так и одним exe-файлом.
 
 ### Новое в v0.2.0 — Steam Desktop Authenticator внутри лаунчера
@@ -31,6 +32,20 @@ Steam Desktop Autheticator + Account Switcher + Parrallel Multi Launcher with Ai
 - **Отвязка аутентификатора** по revocation-коду прямо из приложения.
 
 ## Скриншоты
+
+В v0.2.5 оформление обновлено по согласованному эскизу: [изменения и проверки](docs/review-2026-09-19/FLUENT-IMPLEMENTATION.md).
+
+Ниже — предыдущий интерфейс v0.2.4, демонстрационные аккаунты и операции:
+
+<p align="center">
+  <img src="docs/screenshots/accounts-v024.png" alt="Аккаунты и доступ Steam Guard — v0.2.4" width="1000">
+</p>
+<p align="center">
+  <img src="docs/screenshots/confirmations-v024.png" alt="Продажа с изображением и состав обмена — v0.2.4" width="1000">
+</p>
+
+<details>
+<summary>Скриншоты предыдущего интерфейса</summary>
 
 <p align="center">
   <img src="docs/screenshots/mainscreen.png" alt="Главный экран" width="760"><br>
@@ -48,6 +63,8 @@ Steam Desktop Autheticator + Account Switcher + Parrallel Multi Launcher with Ai
   <img src="docs/screenshots/settingsscreen.png" alt="Настройки" width="760"><br>
   <em>Настройки — workspace, путь к Steam, Sandboxie-Plus, откат свитча.</em>
 </p>
+
+</details>
 
 ## Установка
 
@@ -78,7 +95,8 @@ Sandboxie-Plus не идёт в комплекте: при первом пере
 - `loginusers.vdf` бэкапится в `<workspace>/backups/` перед каждым свитчем.
 - Старое `HKCU\…\AutoLoginUser` сохраняется в `<workspace>/backups/registry-<ts>.json`.
 - В настройках — кнопка **Revert last switch**: откатывает обе вещи атомарно.
-- Пароли Steam не хранятся, не запрашиваются, не отправляются. Используется тот же auto-login токен, что и у самого Steam.
+- Switch/Sandbox используют сохранённую авторизацию Steam. Для Authenticator можно включить «Запомнить пароль»: после успешного входа он сохраняется отдельно от `.maFile`, зашифрованный Windows DPAPI для текущего пользователя. Пароль отправляется только Steam для входа и не включается в экспорт `.maFile`; его можно удалить кнопкой «Забыть сохранённый пароль».
+- При потере сессии Authenticator сначала обновляет токен, затем при необходимости использует сохранённый пароль и автоматически отправляет Steam Guard. Неверный пароль или дополнительная проверка Steam останавливают автовход до ручной авторизации. Заблокированное мастер-паролем хранилище необходимо сначала разблокировать.
 - `.maFile` можно зашифровать мастер-паролем (Argon2id с 64 МБ памяти + AES-256-GCM). Без пароля в процессе не раскрываются.
 - `shared_secret`, `identity_secret`, `refresh_token` никогда не логируются. `revocation_code` показывается один раз на этапе привязки — дальше он тоже только на диске (в шифрованном виде, если включён мастер-пароль).
 
@@ -134,7 +152,8 @@ Steam account switcher and parallel launcher via Sandboxie-Plus. With a built-in
 - **One-click game launch** from any account, with library covers from local Steam cache.
 - **Per-account desktop shortcuts** — `.lnk` boots the launcher in headless mode and starts the chosen profile.
 - **Backups & rollback** — `loginusers.vdf` and registry snapshots are saved before every switch, with a one-click «Revert last switch».
-- **Pixel-art UI with animations** — chromeless 760×520, EN/RU.
+- **Readable dark UI** — cards or compact rows, account search, Steam Guard access panel, resizable from 760×520, EN/RU.
+- **Item previews in confirmations** — market thumbnails and expandable trade contents with both sides, quantities and partner SteamID.
 - **Portable build** — single `.exe`, no installer required.
 
 ### New in v0.2.0 — built-in Steam Desktop Authenticator
@@ -172,7 +191,8 @@ UAC is only requested when actually needed (Sandbox mode). Switch mode works wit
 
 - `loginusers.vdf` + registry snapshot backed up before every switch.
 - Settings → **Revert last switch** restores both atomically.
-- No Steam passwords stored, requested, or transmitted — only the auto-login token Steam itself uses.
+- Switch/Sandbox reuse Steam's saved login. Authenticator optionally remembers a password after successful login, protected with Windows DPAPI for the current user in a separate file. It is sent only to Steam for authentication, excluded from `.maFile` exports, and can be removed with **Forget saved password**.
+- Authenticator refreshes tokens first, then uses a saved password and generates Steam Guard automatically if a new login is required. Rejected credentials or additional Steam checks pause automatic login until manual sign-in. A vault protected by a master password must be unlocked first.
 - `.maFile`s can be sealed under a master password (Argon2id 64 MiB + AES-256-GCM).
 - `shared_secret` / `identity_secret` / `refresh_token` never appear in logs. `revocation_code` is shown once during enrollment.
 

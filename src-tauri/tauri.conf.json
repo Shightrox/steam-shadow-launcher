@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Steam Shadow Launcher",
-  "version": "0.2.2",
+  "version": "0.2.5",
   "identifier": "io.kilocode.steamshadow",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -13,13 +13,11 @@
     "windows": [
       {
         "title": "Steam Shadow Launcher",
-        "width": 760,
-        "height": 520,
+        "width": 1000,
+        "height": 720,
         "minWidth": 760,
         "minHeight": 520,
-        "maxWidth": 760,
-        "maxHeight": 520,
-        "resizable": false,
+        "resizable": true,
         "decorations": false,
         "dragDropEnabled": false,
         "transparent": false,

@@ -37,7 +37,8 @@ fn enumerate_processes() -> Vec<ProcInfo> {
         TH32CS_SNAPPROCESS,
     };
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     let mut out = Vec::new();
@@ -89,7 +90,12 @@ fn enumerate_processes() -> Vec<ProcInfo> {
                         _ => PathBuf::new(),
                     }
                 };
-                out.push(ProcInfo { pid, ppid, name, exe_path });
+                out.push(ProcInfo {
+                    pid,
+                    ppid,
+                    name,
+                    exe_path,
+                });
                 if Process32NextW(snap, &mut entry).is_err() {
                     break;
                 }
@@ -104,7 +110,10 @@ pub fn find_steam_processes() -> Vec<SteamProcess> {
     enumerate_processes()
         .into_iter()
         .filter(|p| p.name.eq_ignore_ascii_case("steam.exe"))
-        .map(|p| SteamProcess { pid: p.pid, exe: p.exe_path })
+        .map(|p| SteamProcess {
+            pid: p.pid,
+            exe: p.exe_path,
+        })
         .collect()
 }
 
@@ -130,7 +139,9 @@ pub fn find_running_games(main_steamapps: &Path) -> Vec<RunningGame> {
         let mut depth = 0;
         let mut steam_ancestor = false;
         while depth < 16 && cursor != 0 {
-            let Some(parent) = by_pid.get(&cursor) else { break };
+            let Some(parent) = by_pid.get(&cursor) else {
+                break;
+            };
             if parent.name.eq_ignore_ascii_case("steam.exe") {
                 steam_ancestor = true;
                 break;
@@ -138,7 +149,8 @@ pub fn find_running_games(main_steamapps: &Path) -> Vec<RunningGame> {
             cursor = parent.ppid;
             depth += 1;
         }
-        if steam_ancestor {
+        if steam_ancestor && crate::sandboxie::process_box(p.pid).is_ok_and(|boxed| boxed.is_none())
+        {
             out.push(RunningGame {
                 pid: p.pid,
                 exe_name: p.name.clone(),
@@ -149,58 +161,68 @@ pub fn find_running_games(main_steamapps: &Path) -> Vec<RunningGame> {
     out
 }
 
-/// Graceful shutdown of all Steam processes. Returns `true` if at least one was killed.
+/// Stop only the selected host Steam. Boxed instances are never targets.
+fn host_steam(steam_exe: &Path) -> AppResult<Vec<SteamProcess>> {
+    let expected = crate::storage::path_key(steam_exe)?;
+    let mut targets = Vec::new();
+    for process in find_steam_processes() {
+        if process.exe.as_os_str().is_empty() {
+            continue;
+        }
+        if crate::storage::path_key(&process.exe).ok().as_ref() != Some(&expected) {
+            continue;
+        }
+        if crate::sandboxie::process_box(process.pid)?.is_none() {
+            targets.push(process);
+        }
+    }
+    Ok(targets)
+}
+
 pub fn graceful_shutdown(steam_exe: &Path) -> AppResult<bool> {
-    let initial = find_steam_processes();
-    tracing::info!("graceful_shutdown: found {} steam processes", initial.len());
+    let initial = host_steam(steam_exe)?;
     if initial.is_empty() {
         return Ok(false);
     }
-
-    // Step 1: ask steam to shut down via its own flag
-    let _ = Command::new(steam_exe)
+    let ids: Vec<_> = initial.iter().map(|p| p.pid).collect();
+    let remaining = || -> AppResult<Vec<SteamProcess>> {
+        Ok(host_steam(steam_exe)?
+            .into_iter()
+            .filter(|p| ids.contains(&p.pid))
+            .collect())
+    };
+    Command::new(steam_exe)
         .arg("-shutdown")
         .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
-        .spawn();
-
-    let deadline = Instant::now() + Duration::from_secs(8);
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(400));
-        if find_steam_processes().is_empty() {
-            tracing::info!("graceful_shutdown: steam shut down via -shutdown");
+        .spawn()?;
+    for (wait, force) in [(8, false), (4, true)] {
+        let deadline = Instant::now() + Duration::from_secs(wait);
+        while Instant::now() < deadline {
+            if remaining()?.is_empty() {
+                return Ok(true);
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        for process in remaining()? {
+            let mut cmd = Command::new("taskkill");
+            cmd.args(["/PID", &process.pid.to_string()]);
+            if force {
+                cmd.args(["/F", "/T"]);
+            }
+            let status = cmd.creation_flags(CREATE_NO_WINDOW).status()?;
+            if !status.success() && remaining()?.iter().any(|p| p.pid == process.pid) {
+                return Err(AppError::Process("STEAM_SHUTDOWN_FAILED".into()));
+            }
+        }
+    }
+    for _ in 0..10 {
+        if remaining()?.is_empty() {
             return Ok(true);
         }
+        std::thread::sleep(Duration::from_millis(100));
     }
-
-    // Step 2: WM_CLOSE via taskkill
-    let _ = Command::new("taskkill")
-        .args(["/IM", "steam.exe"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status();
-
-    let deadline = Instant::now() + Duration::from_secs(4);
-    while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(300));
-        if find_steam_processes().is_empty() {
-            tracing::info!("graceful_shutdown: steam closed via taskkill");
-            return Ok(true);
-        }
+    if !remaining()?.is_empty() {
+        return Err(AppError::Process("STEAM_SHUTDOWN_FAILED".into()));
     }
-
-    // Step 3: force
-    let status = Command::new("taskkill")
-        .args(["/F", "/IM", "steam.exe", "/T"])
-        .creation_flags(CREATE_NO_WINDOW)
-        .status();
-    if let Ok(s) = status {
-        if !s.success() {
-            return Err(AppError::Process(format!(
-                "taskkill /F failed: {:?}",
-                s.code()
-            )));
-        }
-    }
-    std::thread::sleep(Duration::from_millis(800));
-    tracing::info!("graceful_shutdown: steam force-killed");
     Ok(true)
 }

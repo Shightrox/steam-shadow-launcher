@@ -1,18 +1,22 @@
+import { installDialogAccessibility } from "./components/dialogAccessibility";
 import { useEffect, useState } from "react";
 import { useApp } from "./state/store";
 import { FirstRunWizard } from "./views/FirstRunWizard";
 import { MainView } from "./views/MainView";
 import { SettingsView } from "./views/SettingsView";
 import { AuthenticatorView } from "./views/AuthenticatorView";
+import { ConfirmationsView } from "./views/ConfirmationsView";
 import { LogDrawer } from "./components/LogDrawer";
 import { TitleBar } from "./components/TitleBar";
 import { Sidebar } from "./components/Sidebar";
+import { AmbientBackground } from "./components/AmbientBackground";
 import { ToastHost } from "./components/ToastHost";
 import { UpdateModal } from "./components/UpdateModal";
 import { useI18n, type Lang } from "./i18n";
 import { listen } from "@tauri-apps/api/event";
 import {
   AUTH_AUTO_CONFIRMED_EVENT,
+  AUTH_CONFIRMS_ERROR_EVENT,
   AUTH_CONFIRMS_EVENT,
   AUTH_SESSION_STATE_EVENT,
   api,
@@ -21,7 +25,7 @@ import {
   type UpdateInfo,
 } from "./api/tauri";
 
-export type Route = "main" | "settings" | "auth";
+export type Route = "main" | "settings" | "auth" | "confirmations";
 
 // Block right-click, DevTools hotkeys, reload etc. in production-ish way.
 function installGuards() {
@@ -50,25 +54,13 @@ function installGuards() {
     },
     true
   );
-  // Block text selection in general, allow only inputs
-  document.addEventListener(
-    "selectstart",
-    (e) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-      // Allow text selection inside destructive-confirm dialogs so the user
-      // can copy the literal type-to-confirm phrase.
-      const target = e.target as HTMLElement | null;
-      if (target && target.closest(".confirm-body")) return;
-      e.preventDefault();
-    },
-    true
-  );
+
 }
 
 export default function App() {
   const {
     settings,
+    bootError,
     accounts,
     authStatus,
     bootstrap,
@@ -79,12 +71,17 @@ export default function App() {
   } = useApp();
   const { t, setLang, lang } = useI18n();
   const [route, setRoute] = useState<Route>("main");
+  const [authLogin, setAuthLogin] = useState<string | null>(null);
+  const [confirmationLogin, setConfirmationLogin] = useState<string | null>(null);
+  const manageAccess = (login?: string) => { setAuthLogin(login ?? null); setRoute("auth"); };
+  const showConfirmations = (login?: string) => { setConfirmationLogin(login ?? null); setRoute("confirmations"); };
   const [logOpen, setLogOpen] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
 
   useEffect(() => {
     installGuards();
     bootstrap();
+    return installDialogAccessibility();
   }, []);
 
   // Background update check on startup. We wait a few seconds so we don't
@@ -109,15 +106,23 @@ export default function App() {
   useEffect(() => {
     const unlisteners: Array<Promise<() => void>> = [];
     unlisteners.push(
-      listen<{ login: string; count: number; items: Confirmation[] }>(
+      listen<{ workspace: string; login: string; message: string }>(AUTH_CONFIRMS_ERROR_EVENT, (e) => {
+        if (e.payload.workspace !== useApp.getState().settings?.workspace) return;
+        useApp.getState().setConfirmationError(e.payload.login, e.payload.message);
+      }),
+    );
+    unlisteners.push(
+      listen<{ workspace: string; login: string; count: number; items: Confirmation[] }>(
         AUTH_CONFIRMS_EVENT,
         (e) => {
+          if (e.payload.workspace !== useApp.getState().settings?.workspace) return;
           mergeConfirmations(e.payload.login, e.payload.items);
         },
       ),
     );
     unlisteners.push(
-      listen<{ login: string; ids: string[] }>(AUTH_AUTO_CONFIRMED_EVENT, (e) => {
+      listen<{ workspace: string; login: string; ids: string[] }>(AUTH_AUTO_CONFIRMED_EVENT, (e) => {
+        if (e.payload.workspace !== useApp.getState().settings?.workspace) return;
         toast(
           "success",
           t("auth.poller.autoConfirmed", {
@@ -128,9 +133,10 @@ export default function App() {
       }),
     );
     unlisteners.push(
-      listen<{ login: string; state: SessionState }>(
+      listen<{ workspace: string; login: string; state: SessionState }>(
         AUTH_SESSION_STATE_EVENT,
         (e) => {
+          if (e.payload.workspace !== useApp.getState().settings?.workspace) return;
           setSessionState(e.payload.login, e.payload.state);
         },
       ),
@@ -146,34 +152,42 @@ export default function App() {
     }
   }, [settings?.language]);
 
-  // P11: refresh all guard codes every 30 seconds + initial pull.
+  // Align refreshes with expiration, independently of when the view mounted.
   useEffect(() => {
-    const loginsWithAuth = accounts
-      .filter((a) => a.hasAuthenticator || authStatus[a.login]?.hasAuthenticator)
-      .map((a) => a.login);
-    if (!loginsWithAuth.length) return;
     let cancelled = false;
-    const pump = async () => {
-      for (const login of loginsWithAuth) {
-        if (cancelled) return;
-        await refreshCode(login);
+    const pump = () => {
+      if (cancelled) return;
+      const state = useApp.getState();
+      if (state.authLock?.enabled && !state.authLock.unlocked) return;
+      for (const account of state.accounts) {
+        if (!account.hasAuthenticator) continue;
+        const code = state.codes[account.login];
+        if (!code || code.generatedAt + code.periodRemaining <= Date.now() / 1000) void refreshCode(account.login);
       }
     };
     pump();
-    const iv = setInterval(pump, 30_000);
-    return () => {
-      cancelled = true;
-      clearInterval(iv);
-    };
+    const timer = window.setInterval(pump, 1000);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, [accounts, authStatus]);
 
   if (!settings) {
     return (
       <div className="app">
+        <AmbientBackground />
         <TitleBar />
         <div className="shell">
           <div className="content">
-            <div className="empty">{t("common.booting")}</div>
+            <div className="empty boot-state">
+              <strong>{bootError ? t("boot.failed") : t("common.booting")}</strong>
+              {bootError && <>
+                <p>{t("boot.recoveryHint")}</p>
+                <details><summary>{t("common.details")}</summary><pre>{bootError}</pre></details>
+                <div className="actions">
+                  <button onClick={() => bootstrap()}>{t("common.retry")}</button>
+                  <button onClick={async () => { try { await api.recoverSettings(); await bootstrap(); } catch (e) { useApp.setState({ bootError: String(e) }); } }}>{t("boot.recover")}</button>
+                </div>
+              </>}
+            </div>
           </div>
         </div>
       </div>
@@ -184,6 +198,7 @@ export default function App() {
 
   return (
     <div className="app">
+      <AmbientBackground />
       <TitleBar />
       {showWizard ? (
         <div className="shell no-side">
@@ -195,16 +210,18 @@ export default function App() {
         <div className="shell">
           <Sidebar
             view={route}
-            setView={setRoute}
+            setView={view => { if (view === "confirmations") showConfirmations(); else if (view === "auth") manageAccess(); else setRoute(view); }}
             toggleLog={() => setLogOpen((v) => !v)}
           />
           <div className="content">
             {route === "settings" ? (
               <SettingsView onClose={() => setRoute("main")} />
             ) : route === "auth" ? (
-              <AuthenticatorView />
+              <AuthenticatorView initialLogin={authLogin} />
+            ) : route === "confirmations" ? (
+              <ConfirmationsView initialLogin={confirmationLogin} onManage={manageAccess} />
             ) : (
-              <MainView />
+              <MainView onManage={manageAccess} onConfirmations={showConfirmations} />
             )}
           </div>
         </div>

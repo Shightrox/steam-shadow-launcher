@@ -99,10 +99,7 @@ fn read_install_dir() -> Option<PathBuf> {
 pub fn detect() -> SandboxieInfo {
     let dir = read_install_dir();
     let start = dir.as_ref().map(|d| d.join("Start.exe"));
-    let installed = start
-        .as_ref()
-        .map(|p| p.exists())
-        .unwrap_or(false);
+    let installed = start.as_ref().map(|p| p.exists()).unwrap_or(false);
     SandboxieInfo {
         installed,
         install_dir: dir,
@@ -244,8 +241,7 @@ pub fn relaunch_self_as_admin() -> AppResult<()> {
     use windows::Win32::UI::Shell::{ShellExecuteExW, SHELLEXECUTEINFOW};
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-    let exe = std::env::current_exe()
-        .map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
+    let exe = std::env::current_exe().map_err(|e| AppError::Other(format!("current_exe: {e}")))?;
     let verb: Vec<u16> = "runas\0".encode_utf16().collect();
     let file: Vec<u16> = exe
         .as_os_str()
@@ -268,16 +264,11 @@ pub fn relaunch_self_as_admin() -> AppResult<()> {
 
 /// Use ShellExecuteExW with verb="runas" to trigger UAC, then WaitForSingleObject
 /// for reliable completion. Returns process exit code.
-fn shell_exec_runas_wait(
-    installer: &std::path::Path,
-    args: &str,
-) -> std::io::Result<u32> {
+fn shell_exec_runas_wait(installer: &std::path::Path, args: &str) -> std::io::Result<u32> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
-    use windows::Win32::System::Threading::{
-        GetExitCodeProcess, WaitForSingleObject, INFINITE,
-    };
+    use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
     use windows::Win32::UI::Shell::{
         ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW,
     };
@@ -379,10 +370,7 @@ pub fn install_silent(installer_path: &std::path::Path) -> AppResult<()> {
                 if info.installed {
                     return Ok(());
                 }
-                last_err = Some(format!(
-                    "args '{}' exit=0 but Sandboxie not detected",
-                    args
-                ));
+                last_err = Some(format!("args '{}' exit=0 but Sandboxie not detected", args));
             }
             Ok(code) => {
                 tracing::warn!("install_silent: args {:?} exit={}", args, code);
@@ -405,11 +393,104 @@ pub fn install_silent(installer_path: &std::path::Path) -> AppResult<()> {
 }
 
 fn box_name(login: &str) -> String {
-    let safe: String = login
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    format!("SteamShadow_{}", safe)
+    use sha1::{Digest, Sha1};
+    let hash = format!("{:x}", Sha1::digest(login.to_ascii_lowercase().as_bytes()));
+    format!("SteamShadow_{}", &hash[..20])
+}
+
+/// Query sandbox membership for a PID. API failures fail closed before a kill.
+pub fn process_box(pid: u32) -> AppResult<Option<String>> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::{
+        Foundation::FreeLibrary,
+        System::LibraryLoader::{GetModuleHandleW, GetProcAddress, LoadLibraryW},
+    };
+    unsafe {
+        let loaded = GetModuleHandleW(windows::core::w!("SbieDll.dll")).ok();
+        let info = detect();
+        let module = if let Some(module) = loaded {
+            module
+        } else {
+            let Some(dir) = info.install_dir else {
+                return Ok(None);
+            };
+            let path: Vec<u16> = dir
+                .join("SbieDll.dll")
+                .as_os_str()
+                .encode_wide()
+                .chain(Some(0))
+                .collect();
+            LoadLibraryW(windows::core::PCWSTR(path.as_ptr()))
+                .map_err(|_| AppError::Process("SANDBOX_PROCESS_CHECK_FAILED".into()))?
+        };
+        type Query = unsafe extern "system" fn(
+            *mut std::ffi::c_void,
+            *mut u16,
+            *mut u16,
+            *mut u16,
+            *mut u32,
+        ) -> i32;
+        let proc = GetProcAddress(module, windows::core::s!("SbieApi_QueryProcess"));
+        let result = if let Some(proc) = proc {
+            let query: Query = std::mem::transmute(proc);
+            let mut name = [0u16; 34];
+            let status = query(
+                pid as usize as *mut _,
+                name.as_mut_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            );
+            if status == 0 {
+                let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+                Ok(if len == 0 {
+                    None
+                } else {
+                    Some(String::from_utf16_lossy(&name[..len]))
+                })
+            } else if matches!(status as u32, 0xc000000b | 0xc0000008 | 0xc0000034) {
+                // Invalid CID/handle/not-found: PID is not registered as boxed.
+                Ok(None)
+            } else {
+                Err(AppError::Process("SANDBOX_PROCESS_CHECK_FAILED".into()))
+            }
+        } else {
+            Err(AppError::Process("SANDBOX_PROCESS_CHECK_FAILED".into()))
+        };
+        if loaded.is_none() {
+            let _ = FreeLibrary(module);
+        }
+        result
+    }
+}
+
+pub fn prepare_current_box(login: &str, steam_dir: PathBuf) -> AppResult<()> {
+    crate::workspace::validate_login(login)?;
+    if process_box(std::process::id())?.is_none() {
+        return Err(AppError::Process("SANDBOX_HELPER_REQUIRES_BOX".into()));
+    }
+    let main = crate::steam_paths::detect(Some(steam_dir))?;
+    match crate::switcher::patch_loginusers(&main, login) {
+        Ok(()) => {}
+        Err(AppError::NotFound(_)) => { /* New profile: Steam presents its login screen. */ }
+        Err(e) => return Err(e),
+    }
+    crate::switcher::write_autologin(login)
+}
+
+fn resolved_box_name(info: &SandboxieInfo, login: &str) -> String {
+    // Reuse the original box (and its virtual profile) only when its explicit
+    // account title agrees. Collision owners never get silently reassigned.
+    if let Some(path) = ini_path(info) {
+        if let Ok(ini) = crate::sandbox_config::Ini::read(&path) {
+            for (name, owner) in crate::sandbox_config::managed_boxes(&ini.text) {
+                if owner.eq_ignore_ascii_case(login) {
+                    return name;
+                }
+            }
+        }
+    }
+    box_name(login)
 }
 
 /// Returns true if SandMan.exe (the Sandboxie tray UI / portable-mode driver
@@ -451,7 +532,10 @@ fn ensure_sandman_running(info: &SandboxieInfo) -> AppResult<()> {
             // Brief extra wait so the driver is fully initialised before
             // Start.exe tries to use it.
             std::thread::sleep(std::time::Duration::from_millis(400));
-            tracing::info!("ensure_sandman_running: SandMan up after {}ms", (i + 1) * 100);
+            tracing::info!(
+                "ensure_sandman_running: SandMan up after {}ms",
+                (i + 1) * 100
+            );
             return Ok(());
         }
     }
@@ -471,177 +555,125 @@ fn windir() -> PathBuf {
 }
 
 fn ini_path(info: &SandboxieInfo) -> Option<PathBuf> {
-    // Sandboxie-Plus 1.x ships its config as `Sandboxie.ini` next to Start.exe,
-    // BUT the modern build also accepts `%WINDIR%\Sandboxie.ini` and (more
-    // commonly on portable mode) `%WINDIR%\Sandboxie-Plus.ini`.
-    //
-    // Priority:
-    //  - %WINDIR%\Sandboxie-Plus.ini / Sandboxie.ini (user-writable in most cases)
-    //  - install-dir\Sandboxie.ini (if already exists)
-    //  - fallback: install-dir\Sandboxie.ini (may need admin)
-    let w = windir();
-    let plus = w.join("Sandboxie-Plus.ini");
-    if plus.exists() {
-        return Some(plus);
-    }
-    let legacy = w.join("Sandboxie.ini");
-    if legacy.exists() {
-        return Some(legacy);
-    }
-    if let Some(d) = info.install_dir.as_ref() {
-        let p = d.join("Sandboxie.ini");
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    // Need to create — prefer %WINDIR% when not elevated.
-    if !is_elevated() {
-        return Some(w.join("Sandboxie-Plus.ini"));
-    }
-    info.install_dir.as_ref().map(|d| d.join("Sandboxie.ini"))
+    // Match the driver's Conf_Read order: custom IniPath, installation, Windows.
+    // Sandboxie-Plus.ini stores SandMan UI preferences, NOT sandbox definitions.
+    let custom = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags(r"SYSTEM\CurrentControlSet\Services\SbieDrv", KEY_READ)
+        .ok()
+        .and_then(|key| key.get_value::<String, _>("IniPath").ok())
+        .map(|path| PathBuf::from(path.strip_prefix(r"\??\").unwrap_or(&path)));
+    select_ini_path(custom, info.install_dir.as_deref(), &windir())
 }
 
-/// Append "maximum hide" defaults to the [GlobalSettings] block of the
-/// Sandboxie.ini if they aren't already set. Never overwrites existing
-/// user values — just appends missing keys.
-fn ensure_global_hide(ini: &std::path::Path) -> AppResult<()> {
-    let existing = std::fs::read_to_string(ini).unwrap_or_default();
-    let wanted: [(&str, &str); 3] = [
-        ("SysTrayIconVisible", "n"),
-        ("HideMessage", "*"),
-        ("HideSbieTrayIcon", "y"),
-    ];
-    let has_section = existing.lines().any(|l| l.trim() == "[GlobalSettings]");
-    let mut section_body = String::new();
-    let mut in_section = false;
-    for line in existing.lines() {
-        let t = line.trim();
-        if t == "[GlobalSettings]" {
-            in_section = true;
-            continue;
-        }
-        if in_section {
-            if t.starts_with('[') {
-                break;
-            }
-            section_body.push_str(t);
-            section_body.push('\n');
-        }
-    }
-    let missing: Vec<(&str, &str)> = wanted
-        .iter()
-        .filter(|(k, _)| {
-            !section_body
-                .lines()
-                .any(|l| l.trim_start().starts_with(&format!("{k}=")))
+fn select_ini_path(
+    custom: Option<PathBuf>,
+    install: Option<&std::path::Path>,
+    windows: &std::path::Path,
+) -> Option<PathBuf> {
+    custom
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            install
+                .map(|p| p.join("Sandboxie.ini"))
+                .filter(|p| p.is_file())
         })
-        .copied()
-        .collect();
-    if missing.is_empty() {
-        return Ok(());
+        .or_else(|| install.map(|_| windows.join("Sandboxie.ini")))
+}
+
+#[cfg(test)]
+mod config_path_tests {
+    use super::*;
+
+    #[test]
+    fn box_names_fit_sdk_and_distinguish_punctuation() {
+        let names: std::collections::HashSet<_> = ["foo-bar", "foo.bar", "foo_bar"]
+            .map(box_name)
+            .into_iter()
+            .collect();
+        assert_eq!(names.len(), 3);
+        assert!(names.iter().all(|name| name.len() < 34));
+        assert_eq!(box_name("DEMO"), box_name("demo"));
     }
-    let mut new = String::with_capacity(existing.len() + 256);
-    if has_section {
-        let mut inserted = false;
-        for line in existing.lines() {
-            new.push_str(line);
-            new.push_str("\r\n");
-            if !inserted && line.trim() == "[GlobalSettings]" {
-                for (k, v) in &missing {
-                    new.push_str(&format!("{k}={v}\r\n"));
-                }
-                inserted = true;
-            }
+
+    #[test]
+    fn follows_driver_precedence_and_ignores_sandman_preferences() {
+        let root =
+            std::env::temp_dir().join(format!("steam-shadow-path-test-{}", rand::random::<u64>()));
+        let home = root.join("home");
+        let windows = root.join("windows");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir(&windows).unwrap();
+        let custom = root.join("custom.ini");
+        let system_ini = windows.join("Sandboxie.ini");
+        let home_ini = home.join("Sandboxie.ini");
+        let ui_ini = windows.join("Sandboxie-Plus.ini");
+        std::fs::write(&ui_ini, "[Options]").unwrap();
+        std::fs::write(&system_ini, "[DefaultBox]").unwrap();
+        assert_eq!(
+            select_ini_path(None, Some(&home), &windows),
+            Some(system_ini.clone())
+        );
+        std::fs::write(&home_ini, "[DefaultBox]").unwrap();
+        assert_eq!(
+            select_ini_path(None, Some(&home), &windows),
+            Some(home_ini.clone())
+        );
+        std::fs::write(&custom, "[DefaultBox]").unwrap();
+        assert_eq!(
+            select_ini_path(Some(custom.clone()), Some(&home), &windows),
+            Some(custom.clone())
+        );
+        assert_eq!(
+            select_ini_path(Some(root.join("missing.ini")), Some(&home), &windows),
+            Some(home_ini.clone())
+        );
+        for path in [custom, system_ini, home_ini, ui_ini] {
+            std::fs::remove_file(path).unwrap();
         }
-    } else {
-        new.push_str(&existing);
-        if !existing.ends_with('\n') {
-            new.push_str("\r\n");
-        }
-        new.push_str("[GlobalSettings]\r\n");
-        for (k, v) in &missing {
-            new.push_str(&format!("{k}={v}\r\n"));
+        for path in [home, windows, root] {
+            std::fs::remove_dir(path).unwrap();
         }
     }
-    std::fs::write(ini, new).map_err(|e| {
-        AppError::Io(format!(
-            "update GlobalSettings in {}: {} (need admin?)",
-            ini.display(),
-            e
-        ))
-    })?;
-    Ok(())
 }
 
 pub fn ensure_box(info: &SandboxieInfo, main: &MainSteamInfo, login: &str) -> AppResult<String> {
-    let name = box_name(login);
-    let ini = ini_path(info)
-        .ok_or_else(|| AppError::NotFound("Sandboxie not installed".into()))?;
+    static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = CONFIG_LOCK.lock().unwrap();
+    let name = resolved_box_name(info, login);
+    let ini = ini_path(info).ok_or_else(|| AppError::NotFound("Sandboxie not installed".into()))?;
     tracing::info!("ensure_box: name={} ini={}", name, ini.display());
-    if !ini.exists() {
-        // Create empty ini if missing. Will fail without admin if path is in
-        // Program Files.
-        if let Err(e) = std::fs::write(&ini, b"") {
-            return Err(AppError::Io(format!(
-                "write Sandboxie.ini at {}: {} (need admin?)",
-                ini.display(),
-                e
-            )));
+    let mut config = crate::sandbox_config::Ini::read(&ini)?;
+    let templates = info
+        .install_dir
+        .as_ref()
+        .map(|d| crate::sandbox_config::Ini::read(&d.join("Templates.ini")))
+        .transpose()?
+        .map(|i| i.text)
+        .unwrap_or_default();
+    config.text = crate::sandbox_config::repair_templates(&config.text, &templates);
+    // Optional compatibility templates vary by Sandboxie version. There is no
+    // built-in Steam template: use the explicit Steam rules below instead.
+    let mut template_defaults = String::new();
+    for template in ["OpenBluetooth", "SkipHook"] {
+        if crate::sandbox_config::has_template(&templates, template)
+            || crate::sandbox_config::has_template(&config.text, template)
+        {
+            template_defaults.push_str(&format!("Template={template}\n"));
         }
     }
-    // P9.4: ensure GlobalSettings hides the SandMan tray icon and global
-    // notification popups. We DO NOT overwrite existing user keys — only
-    // append ours if absent.
-    let _ = ensure_global_hide(&ini);
-    let txt = std::fs::read_to_string(&ini).unwrap_or_default();
-    let header = format!("[{name}]");
-    // If the section already exists we strip it and rewrite — the schema may
-    // have changed between launcher versions (e.g. we now inject Template=Steam
-    // to fix "Steam Service requires servicing" errors).
-    let txt_without = if let Some(start_idx) = txt.find(&header) {
-        let rest = &txt[start_idx..];
-        let end_off = rest[1..]
-            .find("\n[")
-            .map(|i| start_idx + 1 + i + 1)
-            .unwrap_or(txt.len());
-        let mut s = String::with_capacity(txt.len());
-        s.push_str(&txt[..start_idx]);
-        if end_off < txt.len() {
-            s.push_str(&txt[end_off..]);
-        }
-        tracing::info!("ensure_box: rewriting existing section [{}]", name);
-        s
-    } else {
-        txt
-    };
     let main_dir = main.install_dir.display().to_string();
-    // Sandboxie ships a built-in template "Steam" (see Templates.ini in
-    // install dir) that whitelists the Steam Client Service IPC, registry
-    // keys, COM interfaces and named pipes that the Steam launcher requires.
-    // Without it, sandboxed steam.exe shows "Ошибка службы Steam" / "Steam
-    // Service requires servicing" because the sandbox blocks IPC to the
-    // host's `Steam Client Service`.
-    //
-    // We also let the box write into the host steamapps tree so games are
-    // shared with the main install (read+write).
+    config.text = crate::sandbox_config::isolate_steam(&config.text, &main_dir);
     let block = format!(
-        "\n{header}\n\
-        Enabled=y\n\
+        "Enabled=y\n\
         BoxNameTitle=SS:{login}\n\
         BorderColor=#66ffcc,off,0\n\
         ConfigLevel=10\n\
         AutoRecover=n\n\
         BlockNetworkFiles=n\n\
-        Template=OpenBluetooth\n\
-        Template=Steam\n\
-        Template=SkipHook\n\
+        {template_defaults}\
         OpenFilePath={main_dir}\\steamapps\\*\n\
         OpenFilePath={main_dir}\\steamapps\n\
-        OpenFilePath={main_dir}\\*\n\
-        OpenIpcPath=*\\BaseNamedObjects*\\Steam*\n\
-        OpenIpcPath=*\\BaseNamedObjects*\\__valve*\n\
         OpenIpcPath=\\RPC Control\\steam*\n\
-        OpenWinClass=Valve_*\n\
         OpenWinClass=SDL_app\n\
         CopyLimitKb=1048576\n\
         CopyLimitSilent=y\n\
@@ -670,30 +702,34 @@ pub fn ensure_box(info: &SandboxieInfo, main: &MainSteamInfo, login: &str) -> Ap
         NoUACProxy=y\n\
         SuppressMessage=*\n"
     );
-    let mut new = txt_without;
-    new.push_str(&block);
-    if let Err(e) = std::fs::write(&ini, &new) {
-        return Err(AppError::Io(format!(
-            "write Sandboxie.ini at {}: {} (need admin?)",
-            ini.display(),
-            e
-        )));
-    }
-    // Ask Sandboxie to reload its config so the new box is recognised.
-    if let Some(start) = &info.start_exe {
-        let _ = Command::new(start)
-            .arg("/reload")
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
-    }
+    config.text = crate::sandbox_config::merge_section(&config.text, &name, &block);
+    config.save(&ini)?;
     Ok(name)
 }
 
+fn reload_config(info: &SandboxieInfo) -> AppResult<()> {
+    if let Some(start) = &info.start_exe {
+        let status = Command::new(start)
+            .arg("/reload")
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .map_err(|e| AppError::Process(format!("Sandboxie reload: {e}")))?;
+        if !status.success() {
+            return Err(AppError::Process(format!(
+                "Sandboxie reload failed: {status}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn launch_in_box(info: &SandboxieInfo, main: &MainSteamInfo, login: &str) -> AppResult<u32> {
+    // Repair legacy templates before SandMan reads the config and raises SBIE1411.
     let name = ensure_box(info, main, login)?;
     // Portable mode: Sandboxie driver is only loaded while SandMan.exe runs.
     // Without it, Start.exe silently exits with code 1 and the box never opens.
     ensure_sandman_running(info)?;
+    reload_config(info)?;
     let start = info
         .start_exe
         .clone()
@@ -705,6 +741,17 @@ pub fn launch_in_box(info: &SandboxieInfo, main: &MainSteamInfo, login: &str) ->
         main.steam_exe.display(),
         login
     );
+    let prepare = Command::new(&start)
+        .arg(format!("/box:{name}"))
+        .arg("/wait")
+        .arg(std::env::current_exe()?)
+        .arg(format!("--prepare-sandbox={login}"))
+        .arg(format!("--steam-dir={}", main.install_dir.display()))
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()?;
+    if !prepare.success() {
+        return Err(AppError::Process("SANDBOX_PREPARE_FAILED".into()));
+    }
     let output = Command::new(&start)
         .arg(format!("/box:{name}"))
         .arg(&main.steam_exe)
@@ -769,25 +816,19 @@ pub fn list_running(info: &SandboxieInfo) -> Vec<RunningSandbox> {
     let Some(ini) = ini_path(info) else {
         return out;
     };
-    let txt = match std::fs::read_to_string(&ini) {
-        Ok(t) => t,
+    let txt = match crate::sandbox_config::Ini::read(&ini) {
+        Ok(t) => t.text,
         Err(_) => return out,
     };
-    for line in txt.lines() {
-        let t = line.trim();
-        if !(t.starts_with("[SteamShadow_") && t.ends_with("]")) {
-            continue;
-        }
-        let name = &t[1..t.len() - 1];
-        let login = name.strip_prefix("SteamShadow_").unwrap_or(name).to_string();
-        let pids = list_box_pids(start, name);
+    for (name, login) in crate::sandbox_config::managed_boxes(&txt) {
+        let pids = list_box_pids(start, &name);
         if pids.is_empty() {
             continue;
         }
         let started = launch_times()
             .lock()
             .ok()
-            .and_then(|m| m.get(name).copied())
+            .and_then(|m| m.get(&name).copied())
             .unwrap_or(0);
         out.push(RunningSandbox {
             login,
@@ -839,7 +880,11 @@ fn enum_box_pids_via_sbiedll(box_name: &str) -> Option<Vec<u32>> {
             if !c.exists() {
                 continue;
             }
-            let w: Vec<u16> = c.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+            let w: Vec<u16> = c
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
             if let Ok(h) = LoadLibraryW(PCWSTR(w.as_ptr())) {
                 if !h.is_invalid() {
                     hmod = h;
@@ -867,13 +912,7 @@ fn enum_box_pids_via_sbiedll(box_name: &str) -> Option<Vec<u32>> {
         //     ULONG  which_session,    // -1 = all
         //     ULONG* pids,             // pids[0] in: max, out: count; pids[1..] PIDs
         //     ULONG* boxed_count_opt);
-        type EnumProcEx = unsafe extern "system" fn(
-            *const u16,
-            u8,
-            u32,
-            *mut u32,
-            *mut u32,
-        ) -> i32;
+        type EnumProcEx = unsafe extern "system" fn(*const u16, u8, u32, *mut u32, *mut u32) -> i32;
 
         let proc = GetProcAddress(hmod, windows::core::s!("SbieApi_EnumProcessEx"));
         let func: EnumProcEx = match proc {
@@ -890,7 +929,13 @@ fn enum_box_pids_via_sbiedll(box_name: &str) -> Option<Vec<u32>> {
             .collect();
         let mut buf: [u32; 512] = [0; 512];
         buf[0] = 511; // capacity hint — convention used by Sandboxie SDK examples.
-        let rc = func(box_w.as_ptr(), 0, u32::MAX, buf.as_mut_ptr(), std::ptr::null_mut());
+        let rc = func(
+            box_w.as_ptr(),
+            0,
+            u32::MAX,
+            buf.as_mut_ptr(),
+            std::ptr::null_mut(),
+        );
         let _ = FreeLibrary(hmod);
         if rc != 0 {
             return None;
@@ -908,14 +953,14 @@ fn enum_box_pids_via_sbiedll(box_name: &str) -> Option<Vec<u32>> {
 }
 
 /// Gracefully shut down a sandboxed Steam (`steam.exe -shutdown` inside the
-/// box) and wait up to 3s; if still alive, terminate_all.
+/// box) and wait up to 3s; if still alive, terminate only that box.
 pub fn stop_box(info: &SandboxieInfo, login: &str) -> AppResult<()> {
-    let name = box_name(login);
+    let name = resolved_box_name(info, login);
     let start = info
         .start_exe
         .clone()
         .ok_or_else(|| AppError::NotFound("Start.exe not found".into()))?;
-    let main = crate::steam_paths::detect(None)?;
+    let main = crate::steam_paths::detect(crate::settings::load()?.main_steam_path_override)?;
     tracing::info!("stop_box: graceful -shutdown into box={}", name);
     let _ = Command::new(&start)
         .arg(format!("/box:{name}"))
@@ -933,12 +978,13 @@ pub fn stop_box(info: &SandboxieInfo, login: &str) -> AppResult<()> {
             return Ok(());
         }
     }
-    tracing::warn!("stop_box: graceful timed out; terminate_all on {}", name);
-    let _ = Command::new(&start)
+    tracing::warn!("stop_box: graceful timed out; terminate selected box {}", name);
+    let status = Command::new(&start)
         .arg(format!("/box:{name}"))
-        .arg("/terminate_all")
+        .arg("/terminate")
         .creation_flags(CREATE_NO_WINDOW)
-        .status();
+        .status()?;
+    if !status.success() { return Err(AppError::Process("SANDBOX_STOP_FAILED".into())); }
     if let Ok(mut m) = launch_times().lock() {
         m.remove(&name);
     }
@@ -947,17 +993,12 @@ pub fn stop_box(info: &SandboxieInfo, login: &str) -> AppResult<()> {
 
 /// Send `-applaunch <appid>` into the running sandboxed Steam after a small
 /// delay. Spawned on a background thread so the caller can return immediately.
-pub fn spawn_applaunch_in_box(
-    info: &SandboxieInfo,
-    main: &MainSteamInfo,
-    login: &str,
-    appid: u32,
-) {
+pub fn spawn_applaunch_in_box(info: &SandboxieInfo, main: &MainSteamInfo, login: &str, appid: u32) {
     let Some(start) = info.start_exe.clone() else {
         return;
     };
     let steam = main.steam_exe.clone();
-    let name = box_name(login);
+    let name = resolved_box_name(info, login);
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(2500));
         let _ = Command::new(&start)
@@ -971,7 +1012,7 @@ pub fn spawn_applaunch_in_box(
 }
 
 pub fn remove_box(info: &SandboxieInfo, login: &str) -> AppResult<()> {
-    let name = box_name(login);
+    let name = resolved_box_name(info, login);
     if let Some(start) = &info.start_exe {
         let _ = Command::new(start)
             .arg(format!("/box:{name}"))
@@ -980,7 +1021,8 @@ pub fn remove_box(info: &SandboxieInfo, login: &str) -> AppResult<()> {
             .status();
     }
     if let Some(ini) = ini_path(info) {
-        if let Ok(txt) = std::fs::read_to_string(&ini) {
+        if let Ok(mut config) = crate::sandbox_config::Ini::read(&ini) {
+            let txt = &config.text;
             let header = format!("[{name}]");
             if let Some(start_idx) = txt.find(&header) {
                 let rest = &txt[start_idx..];
@@ -994,7 +1036,8 @@ pub fn remove_box(info: &SandboxieInfo, login: &str) -> AppResult<()> {
                 if end_off < txt.len() {
                     new.push_str(&txt[end_off..]);
                 }
-                let _ = std::fs::write(&ini, new);
+                config.text = new;
+                config.save(&ini)?;
             }
         }
     }

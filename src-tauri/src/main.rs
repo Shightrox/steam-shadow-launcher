@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod backups;
 mod commands;
 mod download;
 mod error;
@@ -7,12 +8,15 @@ mod http;
 mod junction;
 mod launcher;
 mod library;
+mod lifecycle;
+mod sandbox_config;
 mod sandboxie;
 mod sda;
 mod settings;
 mod shortcut;
 mod steam_paths;
 mod steam_process;
+mod storage;
 mod switcher;
 mod updater;
 mod vdf;
@@ -26,6 +30,36 @@ fn main() {
     // showing any UI. This is what the desktop `.lnk` shortcuts created via
     // `create_account_shortcut` use.
     let args: Vec<String> = std::env::args().collect();
+    if let Some(login) = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--prepare-sandbox="))
+    {
+        let result = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--steam-dir="))
+            .ok_or_else(|| error::AppError::Config("Steam directory required".into()))
+            .and_then(|dir| sandboxie::prepare_current_box(login, dir.into()));
+        if let Err(e) = &result {
+            eprintln!("{e}");
+        }
+        std::process::exit(if result.is_ok() { 0 } else { 1 });
+    }
+    if args.iter().any(|a| a == "--cleanup-backups") {
+        let result = settings::load()
+            .and_then(|s| {
+                s.workspace
+                    .ok_or_else(|| error::AppError::Workspace("workspace not configured".into()))
+            })
+            .and_then(|ws| backups::maintain(&ws));
+        match result {
+            Ok(r) => println!("{}", serde_json::to_string(&r).unwrap()),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
     if let Some(login) = args.iter().find_map(|a| a.strip_prefix("--launch=")) {
         let login = login.to_string();
         let res = headless_launch(&login);
@@ -89,8 +123,11 @@ fn main() {
             commands::auth_generate_code,
             commands::auth_sync_time,
             commands::auth_confirmations_list,
+            commands::auth_confirmation_details,
             commands::auth_confirmations_respond,
             commands::auth_login_begin,
+            commands::auth_login_cancel,
+            commands::auth_password_forget,
             commands::auth_login_submit_code,
             commands::auth_login_poll,
             commands::auth_login_refresh,
@@ -108,6 +145,9 @@ fn main() {
             commands::auth_add_finalize,
             commands::auth_add_persist,
             commands::auth_add_cancel,
+            commands::auth_add_resume,
+            commands::recover_settings,
+            commands::cleanup_backups,
             commands::auth_add_diagnose,
             commands::check_update,
             commands::apply_update,
@@ -118,17 +158,19 @@ fn main() {
 
 fn headless_launch(login: &str) -> Result<(), String> {
     let s = settings::load().map_err(|e| e.to_string())?;
-    let ws = s.workspace.clone().ok_or_else(|| "workspace not configured".to_string())?;
-    let main = steam_paths::detect(s.main_steam_path_override.clone())
-        .map_err(|e| e.to_string())?;
+    let ws = s
+        .workspace
+        .clone()
+        .ok_or_else(|| "workspace not configured".to_string())?;
+    let main =
+        steam_paths::detect(s.main_steam_path_override.clone()).map_err(|e| e.to_string())?;
     let sb = sandboxie::detect();
     let accounts = workspace::list_accounts(&ws).map_err(|e| e.to_string())?;
     let account = accounts
         .into_iter()
         .find(|a| a.login == login)
         .ok_or_else(|| format!("account '{login}' not found"))?;
-    let mode = launcher::LaunchMode::parse(&s.default_launch_mode)
-        .map_err(|e| e.to_string())?;
+    let mode = launcher::LaunchMode::parse(&s.default_launch_mode).map_err(|e| e.to_string())?;
 
     // SANDBOX requires admin. If we're not elevated, prompt the user (via
     // MessageBoxW since we have no UI) and re-launch self with --launch=...
@@ -148,8 +190,7 @@ fn headless_launch(login: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let _ = launcher::launch(&ws, &main, &sb, &account, mode)
-        .map_err(|e| e.to_string())?;
+    let _ = launcher::launch(&ws, &main, &sb, &account, mode).map_err(|e| e.to_string())?;
     let _ = workspace::touch_last_launch(&ws, login);
     Ok(())
 }
