@@ -1,6 +1,7 @@
 import { create } from "zustand";
+import { ZH } from "./dict.zh";
 
-export type Lang = "ru" | "en";
+export type Lang = "ru" | "en" | "zh";
 
 type Dict = Record<string, string>;
 
@@ -987,7 +988,7 @@ const EN: Dict = {
   "auth.add.success": "Authenticator attached ✓",
 };
 
-const DICTS: Record<Lang, Dict> = { ru: RU, en: EN };
+const DICTS: Record<Lang, Dict> = { ru: RU, en: EN, zh: ZH };
 
 interface I18nState {
   lang: Lang;

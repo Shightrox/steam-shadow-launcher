@@ -55,6 +55,10 @@ export function Sidebar({ view, setView, toggleLog }: Props) {
             className={`xs ${lang === "en" ? "active" : ""}`}
             onClick={() => changeLanguage("en")}
           >EN</button>
+          <button
+            className={`xs ${lang === "zh" ? "active" : ""}`}
+            onClick={() => changeLanguage("zh")}
+          >ZH</button>
         </div>
         <button className="sb-link" onClick={toggleLog}>
           ▤ {t("sb.log")}

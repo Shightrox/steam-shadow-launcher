@@ -60,10 +60,11 @@ pub fn get_settings() -> AppResult<Settings> {
 #[tauri::command(async)]
 pub fn save_settings(settings: Settings) -> AppResult<()> {
     settings::update(|current| {
-        current.language = if settings.language == "en" {
-            "en".into()
-        } else {
-            "ru".into()
+        // Only known languages are accepted; anything else falls back to Russian.
+        current.language = match settings.language.as_str() {
+            "en" => "en".into(),
+            "zh" => "zh".into(),
+            _ => "ru".into(),
         };
         current.default_launch_mode = settings.default_launch_mode;
     })
